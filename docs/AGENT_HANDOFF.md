@@ -2,9 +2,9 @@
 
 > Leia este arquivo PRIMEIRO ao retomar o trabalho. Depois: `docs/SPEC_SOURCE.md` (especificação mestre), `docs/DECISIONS.md`, `docs/adr/`.
 
-## Estado atual (2026-07-01)
+## Estado atual (2026-07-02, 00h)
 
-- **Fase:** F0 — Descoberta e fundação (em andamento).
+- **Fase:** F0 — Descoberta e fundação (quase concluída; 4 docs pendentes, ver abaixo).
 - **Branch:** `feat/foundation` (main vazia; nunca trabalhar direto na main).
 - **Repositório:** monorepo scaffolded (apps/, packages/, infrastructure/, docs/). Nenhum código de produto ainda — apenas documentação, por exigência da F0.
 
@@ -15,11 +15,24 @@
 | Auditoria do diretório (estava vazio) | Orquestrador | ✅ |
 | git init + branch feat/foundation + estrutura do monorepo | Orquestrador | ✅ |
 | docs/SPEC_SOURCE.md (spec mestre condensada) | Orquestrador | ✅ |
-| PRODUCT_VISION, REQUIREMENTS, ROADMAP, EXECUTION_PLAN, BILLING_RULES | Agente Produto | ver tabela de handoffs |
-| ADR-001 (desktop), ADR-002 (backend), ARCHITECTURE, DESKTOP_ARCHITECTURE, SYNC_PROTOCOL, API_SPEC | Agente Arquitetura | ver tabela de handoffs |
-| SECURITY_MODEL, THREAT_MODEL, LGPD | Agente Segurança | ver tabela de handoffs |
-| DATA_MODEL (ERD + dicionário) | Agente Dados | ver tabela de handoffs |
-| TEST_STRATEGY, DEPLOYMENT | Agente QA/DevOps | ver tabela de handoffs |
+| PRODUCT_VISION, REQUIREMENTS, ROADMAP, EXECUTION_PLAN | Agente Produto | ✅ |
+| ADR-001 (desktop), ADR-002 (backend), ARCHITECTURE, DESKTOP_ARCHITECTURE | Agente Arquitetura | ✅ |
+| SECURITY_MODEL, THREAT_MODEL | Agente Segurança | ✅ |
+| DATA_MODEL (5 ERDs mermaid + dicionário das 39 tabelas + Drizzle) | Agente Dados | ✅ |
+| TEST_STRATEGY (TC-001..TC-018 mapeados), DEPLOYMENT | Agente QA/DevOps | ✅ |
+
+## ⚠️ PENDENTE — 4 documentos não entregues (agentes atingiram limite de sessão)
+
+O próximo agente deve criá-los seguindo `docs/SPEC_SOURCE.md` (seções indicadas):
+
+| Arquivo | Conteúdo esperado | Seção da spec |
+|---------|-------------------|---------------|
+| docs/BILLING_RULES.md | Planos preliminares, limites, EntitlementService central, gateway abstraído | §Planos |
+| docs/SYNC_PROTOCOL.md | Manifests+checksums, chunking/zstd, multipart com retomada, snapshots, conflito (lease como prevenção primária + fencing token do DATA_MODEL), envelope encryption DEK/KEK, declaração honesta de não-E2EE no MVP | §Sincronização |
+| docs/API_SPEC.md | Convenções REST /api/v1 (RFC 7807, idempotency, cursor pagination, escopos, webhooks HMAC), tabela de endpoints × permissões | §API pública |
+| docs/LGPD.md | Papéis controlador/operador, inventário de dados, bases legais, retenção, direitos do titular, suboperadores, incidentes/ANPD, mapeamento obrigação→funcionalidade | §LGPD |
+
+Observações de consistência já identificadas para esses docs: usar fencing token e dedup por org definidos em DATA_MODEL.md; SECURITY_MODEL.md já descreve envelope encryption — SYNC_PROTOCOL deve referenciá-lo, não redefinir.
 
 ## Registro de handoffs
 
