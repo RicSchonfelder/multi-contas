@@ -21,18 +21,13 @@
 | DATA_MODEL (5 ERDs mermaid + dicionário das 39 tabelas + Drizzle) | Agente Dados | ✅ |
 | TEST_STRATEGY (TC-001..TC-018 mapeados), DEPLOYMENT | Agente QA/DevOps | ✅ |
 
-## ⚠️ PENDENTE — 4 documentos não entregues (agentes atingiram limite de sessão)
+## Documentação da F0 — COMPLETA (2026-07-02)
 
-O próximo agente deve criá-los seguindo `docs/SPEC_SOURCE.md` (seções indicadas):
+Os 4 docs pendentes (BILLING_RULES, SYNC_PROTOCOL, API_SPEC, LGPD) foram concluídos pelo orquestrador, consistentes com DATA_MODEL (fencing token, dedup por org) e SECURITY_MODEL (envelope encryption referenciada, não redefinida). Todos os 20 documentos de `docs/` existem.
 
-| Arquivo | Conteúdo esperado | Seção da spec |
-|---------|-------------------|---------------|
-| docs/BILLING_RULES.md | Planos preliminares, limites, EntitlementService central, gateway abstraído | §Planos |
-| docs/SYNC_PROTOCOL.md | Manifests+checksums, chunking/zstd, multipart com retomada, snapshots, conflito (lease como prevenção primária + fencing token do DATA_MODEL), envelope encryption DEK/KEK, declaração honesta de não-E2EE no MVP | §Sincronização |
-| docs/API_SPEC.md | Convenções REST /api/v1 (RFC 7807, idempotency, cursor pagination, escopos, webhooks HMAC), tabela de endpoints × permissões | §API pública |
-| docs/LGPD.md | Papéis controlador/operador, inventário de dados, bases legais, retenção, direitos do titular, suboperadores, incidentes/ANPD, mapeamento obrigação→funcionalidade | §LGPD |
-
-Observações de consistência já identificadas para esses docs: usar fencing token e dedup por org definidos em DATA_MODEL.md; SECURITY_MODEL.md já descreve envelope encryption — SYNC_PROTOCOL deve referenciá-lo, não redefinir.
+**Decisões de stack (pendentes de ratificação humana — ver DECISIONS D-007):**
+- ADR-001: **Tauri 2.x + Rust + React + TypeScript**, Profile Service como crate Rust interna, Chromium externo gerenciado.
+- ADR-002: **Node.js + NestJS (adapter Fastify) + TypeScript estrito**, PostgreSQL + Drizzle, Redis, MinIO/S3, BullMQ, OpenTelemetry.
 
 ## Registro de handoffs
 
