@@ -14,3 +14,16 @@ app-data/
 Thumbs.db
 *.tsbuildinfo
 .pnpm-store/
+.cargo/
+.claude/
+*.deb
+*.msi
+*.crt
+*.pfx
+*.p12
+*.key
+secrets/
+auth.json
+jwt_secret
+docs/runbooks/
+infrastructure/

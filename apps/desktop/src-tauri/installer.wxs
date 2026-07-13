@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Browser Workspace"
+           Language="1046"
+           Version="!(bind.FileVersion.MainExe)"
+           Manufacturer="BrowserWorkspace"
+           UpgradeCode="PUT-GUID-HERE">
+
+    <Package InstallerVersion="200"
+             Compressed="yes"
+             InstallScope="perUser"
+             InstallPrivileges="limited"
+             Platform="x64" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Browser Workspace is already installed." />
+    <MediaTemplate />
+
+    <!-- Install directory: %LOCALAPPDATA%\BrowserWorkspace -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLDIR" Name="BrowserWorkspace">
+          <Component Id="MainExecutable" Guid="*">
+            <File Id="MainExe"
+                  Name="Browser Workspace.exe"
+                  Source="$(var.BinDir)\Browser Workspace.exe"
+                  KeyPath="yes" />
+            <Shortcut Id="DesktopShortcut"
+                      Directory="DesktopFolder"
+                      Name="Browser Workspace"
+                      WorkingDirectory="INSTALLDIR"
+                      Icon="icon.ico" />
+            <Shortcut Id="StartMenuShortcut"
+                      Directory="ProgramMenuDir"
+                      Name="Browser Workspace"
+                      WorkingDirectory="INSTALLDIR"
+                      Icon="icon.ico" />
+            <RegistryValue Root="HKMU"
+                           Key="Software\BrowserWorkspace"
+                           Name="InstallPath"
+                           Value="[INSTALLDIR]"
+                           Type="string" />
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="DesktopFolder" />
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ProgramMenuDir" Name="Browser Workspace">
+          <Component Id="StartMenuEntry" Guid="*">
+            <RemoveFolder Id="ProgramMenuDir" On="uninstall" />
+            <RegistryValue Root="HKMU"
+                           Key="Software\BrowserWorkspace"
+                           Name="StartMenuShortcut"
+                           Type="integer"
+                           Value="1" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainFeature" Title="Browser Workspace" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuEntry" />
+    </Feature>
+
+    <Icon Id="icon.ico" SourceFile="$(var.BinDir)\icons\icon.ico" />
+  </Product>
+</Wix>

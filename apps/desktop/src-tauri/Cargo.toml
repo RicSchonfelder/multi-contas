@@ -1,0 +1,32 @@
+[package]
+name = "multi-contas"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "multi_contas_lib"
+crate-type = ["lib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+windows-sys = { version = "0.52", features = [
+  "Win32_Foundation",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_Security"
+] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+tungstenite = "0.26"
+url = "2"
+base64 = "0.22"
+
+[profile.dev]
+incremental = true

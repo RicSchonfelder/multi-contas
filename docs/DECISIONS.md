@@ -16,6 +16,9 @@
 | D-010 | 2026-07-02 | Backend: NestJS (adapter Fastify) + TS estrito; PostgreSQL + Drizzle; Redis; S3/MinIO; BullMQ; OTel | Contratos TS compartilhados no monorepo (desktop/web/SDK) | ADR-002 |
 | D-011 | 2026-07-02 | Sync: lease + fencing token global como prevenção primária de conflito; dedup de chunks POR organização; MVP declarado NÃO-E2EE (KEK no KMS da plataforma) | Integridade > economia de storage; honestidade sobre E2EE exigida pela spec §11 | SYNC_PROTOCOL, DATA_MODEL |
 | D-012 | 2026-07-02 | Segredos de proxy write-only na API (grava, nunca retorna em claro); dados de cartão só no gateway (tokenização) | Spec §8, §13, §15 | API_SPEC, BILLING_RULES |
+| D-013 | 2026-07-02 | Chromium alvo na F1 local: usar a instalação do Google Chrome nativo (%ProgramFiles%/Google/Chrome/Application/chrome.exe) | Já presente na máquina local, evita download lento do runtime Chromium na F1 | docs/EXECUTION_PLAN.md |
+| D-014 | 2026-07-02 | Gerenciador de pacotes: pnpm (instalado globalmente via npm) | Alinhado com a especificação e segurança, centralizando lockfiles | docs/SECURITY_MODEL.md |
+| D-015 | 2026-07-02 | Dependências de compilação desktop: Rustup + Visual Studio Build Tools 2022 instalados via winget | Necessário para compilar o app Tauri 2.x com target MSVC no Windows | docs/EXECUTION_PLAN.md |
 
 ## Como registrar uma nova decisão
 1. Adicione linha na tabela (D-XXX, data, decisão, motivo, referência).

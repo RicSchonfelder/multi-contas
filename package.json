@@ -1,0 +1,16 @@
+{
+  "name": "browser-workspace",
+  "private": true,
+  "description": "Browser workspace monorepo",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "scan:secrets": "node scripts/scan-secrets-logs.mjs",
+    "test:cargo": "cd apps/desktop/src-tauri && cargo test"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.3",
+    "vitest": "^1.6.0"
+  }
+}

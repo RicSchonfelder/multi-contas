@@ -1,26 +1,96 @@
-# Browser Workspace (nome provisório)
+# Multi Contas 🖥️
 
-Plataforma corporativa desktop + cloud para gerenciamento de ambientes de navegador (perfis Chromium) isolados, seguros, auditáveis e colaborativos.
+**Gerenciador de Perfis Chromium** — Crie, gerencie e abra múltiplos perfis isolados do Google Chrome, cada um com suas próprias configurações, cookies, sessões e fingerprint.
 
-> ⚠️ Este produto NÃO implementa evasão de antifraude, manipulação de fingerprint ou qualquer recurso de contorno de plataformas. Ver [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) e limites em [docs/SPEC_SOURCE.md](docs/SPEC_SOURCE.md).
+> Inspirado em ferramentas como Dolphin Anty e GoLogin, mas Open Source e gratuito.
 
-## Estrutura
+![Tauri](https://img.shields.io/badge/Tauri-2.x-6366F1?logo=tauri)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
+![Rust](https://img.shields.io/badge/Rust-1.85+-DEA584?logo=rust)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+---
+
+## ✨ Funcionalidades
+
+| Feature | Descrição |
+|---------|-----------|
+| **Perfis Isolados** | Cada perfil com `--user-data-dir` próprio — cookies, cache e sessões completamente separados |
+| **Auto-Login** | Preenche email e senha automaticamente via Chrome DevTools Protocol |
+| **Proxy por Perfil** | Suporte a HTTP, HTTPS, SOCKS5 e PAC — configure um proxy diferente para cada perfil |
+| **Fingerprint Spoofing** | Mascara WebGL, Canvas, Áudio, Resolução de Tela, Timezone, Geolocalização, CPU, RAM e User-Agent |
+| **Cookies** | Importe e exporte cookies no formato Netscape — logue sem precisar de senha |
+| **Extensões** | Gerencie extensões Chrome por perfil — ative/desative via toggle |
+| **Grupos** | Organize perfis em pastas coloridas para melhor organização |
+| **Interface Moderna** | UI escura e responsiva, grid de perfis com busca e filtros |
+
+## 🚀 Como Usar
+
+### Pré-requisitos
+
+- [Node.js](https://nodejs.org/) 20+
+- [Rust](https://www.rust-lang.org/) 1.85+
+- [Google Chrome](https://www.google.com/chrome/) instalado
+
+### Instalação
+
+```bash
+# Clone o repositório
+git clone https://github.com/RicSchonfelder/multi-contas.git
+cd multi-contas
+
+# Instale as dependências
+npm exec -- pnpm install
+
+# Inicie o app
+cd apps/desktop
+npm exec -- pnpm tauri dev
+```
+
+Ou execute o `start.bat` na raiz do projeto.
+
+### Desenvolvimento (sem Tauri)
+
+Para testar apenas a interface web:
+
+```bash
+cd apps/desktop
+npm exec -- pnpm dev
+```
+
+Acesse `http://localhost:1420` no navegador.
+
+## 🏗️ Estrutura
 
 ```
-/apps          desktop, web-admin, api, worker
-/packages      ui, contracts, database, crypto, logging, config, validation,
-               browser-core, sync-engine, automation-sdk
-/infrastructure docker, terraform, monitoring
-/docs          documentação viva do projeto (começar por SPEC_SOURCE.md e EXECUTION_PLAN.md)
+multi-contas/
+├── apps/
+│   └── desktop/           # Aplicação Tauri (Rust + React)
+│       ├── src/           # Frontend React
+│       └── src-tauri/     # Backend Rust
+│           ├── src/
+│           │   ├── main.rs      # Entrypoint
+│           │   ├── lib.rs       # Comandos Tauri
+│           │   ├── profile.rs   # Gerenciamento de perfis
+│           │   └── cdp.rs       # Chrome DevTools Protocol
+│           └── Cargo.toml
+├── packages/
+│   ├── contracts/         # Tipos TypeScript compartilhados
+│   ├── validation/        # Schemas Zod
+│   └── logging/           # Logger estruturado
+├── .gitignore
+├── package.json
+├── pnpm-workspace.yaml
+└── start.bat
 ```
 
-## Para agentes/desenvolvedores continuando o trabalho
+## 🔒 Segurança
 
-1. Leia `docs/SPEC_SOURCE.md` (especificação mestre condensada).
-2. Leia `docs/AGENT_HANDOFF.md` (estado atual e próximos passos).
-3. Leia `docs/DECISIONS.md` e `docs/adr/` (decisões tomadas).
-4. Trabalhe em branch `feat/*`, nunca na main. Commits pequenos. Testes antes de commit.
+- ✅ **Nenhuma credencial é enviada para servidores externos** — tudo fica local na sua máquina
+- ✅ **Cookies e dados de sessão** armazenados apenas no seu computador
+- ✅ **Código aberto** — auditável por qualquer pessoa
+- ⚠️ As credenciais salvas nos perfis são armazenadas em texto plano no `profiles.json` local. Em produção, recomenda-se usar o gerenciador de credenciais do sistema.
 
-## Status
+## 📝 Licença
 
-**Fase 0 — Descoberta e fundação** (em andamento). Nenhuma funcionalidade implementada ainda; apenas documentação, ADRs e scaffolding.
+MIT

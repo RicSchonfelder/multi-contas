@@ -1,7 +1,9 @@
 # DEPLOYMENT — DevOps, CI/CD e Releases (Browser Workspace)
 
+> **Status: Implementado (F7 — Produção)**
 > Derivado de `docs/SPEC_SOURCE.md` (seções "DevOps", "Atualizações", "Observabilidade", "Fases").
-> O `docker-compose` real será criado na **F3**; esta é a especificação que ele deve cumprir.
+> Documentos operacionais em `docs/runbooks/`. Terraform em `infrastructure/terraform/`.
+> Monitoring stack em `infrastructure/monitoring/`. Backups em `scripts/backup.ps1`.
 
 ---
 
@@ -132,4 +134,30 @@ Processo (Azure Trusted Signing — preferido — ou certificado EV em HSM):
 - OpenTelemetry em api/worker/desktop-serviço; correlation ID ponta a ponta.
 - Alertas mínimos: taxa de falha de sync, corrupção detectada, crashes Chromium por versão, latência p95 da API, falhas de auth anômalas, fila atrasada, disco/storage.
 - Backups PG: contínuo (PITR) + snapshot diário; restore testado mensalmente em staging (evidência em docs). MinIO/S3: versionamento de bucket + replicação.
-- DR: RPO ≤ 1h, RTO ≤ 4h como alvo inicial (formalizar na F7).
+- DR: RPO ≤ 1h, RTO ≤ 4h (runbook em `docs/runbooks/DR-RUNBOOK.md`).
+
+## 8. F7 — Produção (Implementado)
+
+### Artefatos criados
+
+| Artefato | Caminho | Descrição |
+|----------|---------|-----------|
+| CI workflow | `.github/workflows/ci.yml` | Lint + build + cargo check em todo push/PR |
+| Deploy workflow | `.github/workflows/deploy.yml` | Deploy da API em push para main |
+| Monitoring stack | `infrastructure/monitoring/docker-compose.monitoring.yml` | Grafana + Prometheus + Tempo + node-exporter |
+| Prometheus config | `infrastructure/monitoring/prometheus.yml` | Scrape configs para API, Worker, Node, PG, Redis |
+| Alerting rules | `infrastructure/monitoring/alerts.yml` | Alertas: downtime, latência, erros, conexões, fila |
+| Terraform AWS | `infrastructure/terraform/main.tf` | ECS Fargate, RDS, ElastiCache, S3, ALB, IAM, SSM |
+| Terraform vars | `infrastructure/terraform/variables.tf` | Todos os parâmetros configuráveis |
+| Terraform outputs | `infrastructure/terraform/outputs.tf` | Endpoints pós-deploy |
+| Backup script | `scripts/backup.ps1` | pg_dump + S3 sync + DR upload + retenção 30d |
+| DR runbook | `docs/runbooks/DR-RUNBOOK.md` | RTO 4h / RPO 1h, failover + recovery passo a passo |
+| Pentest checklist | `docs/runbooks/PENTEST-CHECKLIST.md` | OWASP ASVS L1 — auth, session, access, data, API |
+
+### Pendências (pós-F7)
+
+- [ ] Provisionar Terraform remote state (S3 + DynamoDB)
+- [ ] Configurar OIDC GitHub → AWS para pipelines
+- [ ] Automatizar failover (Lambda + Terraform)
+- [ ] Configurar domínio e certificado ACM no ALB
+- [ ] Teste mensal de restore em staging
