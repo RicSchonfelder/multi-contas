@@ -417,24 +417,40 @@ impl ProfileManager {
         let lock_path = Path::new(&local_dir).join("lock");
         fs::write(&lock_path, std::process::id().to_string()).map_err(|e| e.to_string())?;
 
-        // CDP port for auto-login + fingerprint
-        let needs_cdp = creds.is_some() || fp.as_ref().map_or(false, |f| f.enabled);
+        // CDP port only for auto-login (NOT for fingerprint — use extension instead)
+        let needs_cdp = creds.is_some();
         let cdp_port = if needs_cdp { 29222 } else { 0 };
 
         let mut cmd = Command::new(&chrome);
         cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()))
            .arg("--no-first-run")
            .arg("--no-default-browser-check")
+           .arg("--no-pings")
+           .arg("--no-crash-upload")
+           .arg("--no-report-upload")
+           .arg("--mute-audio")
            .arg("--disable-blink-features=AutomationControlled")
-           .arg("--disable-features=ChromeWhatsNewUI,ChromeTipsInMainMenu")
+           .arg("--disable-features=ChromeWhatsNewUI,ChromeTipsInMainMenu,ChromeInProductHelp")
            .arg("--disable-sync")
-           .arg("--no-pings");
+           .arg("--disable-background-networking")
+           .arg("--disable-component-update")
+           .arg("--disable-default-apps")
+           .arg("--disable-domain-reliability");
 
-        // Anti-fingerprint flags
-        cmd.arg("--disable-webrtc-peer-connection-for-encryption");
-        cmd.arg("--disable-reading-from-canvas");
-        cmd.arg("--disable-remote-fonts");
-        cmd.arg("--disable-client-side-phishing-detection");
+        // Load stealth extension for fingerprint spoofing (replaces CDP)
+        let fp_enabled = fp.as_ref().map_or(false, |f| f.enabled);
+        if fp_enabled {
+            let ext_path = std::env::current_dir()
+                .unwrap_or_default()
+                .join("extensions")
+                .join("stealth")
+                .to_string_lossy()
+                .to_string();
+            if Path::new(&ext_path).exists() {
+                cmd.arg(format!("--load-extension={}", ext_path));
+                cmd.arg("--disable-extensions-except=");
+            }
+        }
 
         if cdp_port > 0 {
             cmd.arg(format!("--remote-debugging-port={}", cdp_port));
@@ -492,16 +508,10 @@ impl ProfileManager {
         }
         self.store.save(&all).unwrap();
 
-        // CDP operations (fingerprint + auto-login)
-        if cdp_port > 0 {
-            let fp_clone = fp.clone();
+        // CDP auto-login only (fingerprint is handled by stealth extension)
+        if cdp_port > 0 && creds.is_some() {
             let creds_clone = creds.clone();
             std::thread::spawn(move || {
-                if let Some(ref f) = fp_clone {
-                    if f.enabled {
-                        let _ = crate::cdp::apply_fingerprint(cdp_port, f);
-                    }
-                }
                 if let Some(ref c) = creds_clone {
                     let _ = crate::cdp::auto_login(cdp_port, &c.email, &c.password, &c.url);
                 }
