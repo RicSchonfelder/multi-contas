@@ -176,6 +176,16 @@ pub fn resolve_chrome() -> String {
     candidates[0].to_string()
 }
 
+/// Aloca uma porta TCP livre no SO e mantem o listener vivo para reserva.
+/// O caller passa a porta ao Chrome e so libera o listener apos o Chrome
+/// subir (polling). Isso evita o race de "alocar e soltar" (outro processo
+/// podia pegar a porta no intervalo, fazendo o Chrome falhar ao bind).
+fn allocate_free_port() -> Option<(u16, std::net::TcpListener)> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let port = listener.local_addr().ok()?.port();
+    Some((port, listener))
+}
+
 pub struct ProfileStore {
     file_path: PathBuf,
 }
@@ -433,9 +443,10 @@ impl ProfileManager {
         let lock_path = Path::new(&local_dir).join("lock");
         fs::write(&lock_path, std::process::id().to_string()).map_err(|e| e.to_string())?;
 
-        // CDP sempre ativo. Usa porta 0 para o Chrome escolher uma porta livre
-        // no proprio bind (sem race de alocacao) e lemos a porta real do stderr.
-        let cdp_port: u16 = 0;
+        // CDP sempre ativo. Aloca porta livre e MANTEM o listener reservado
+        // ate o Chrome subir (evita race de bind). A porta real e a mesma.
+        let (cdp_port, cdp_listener) = allocate_free_port()
+            .ok_or_else(|| "Falha ao alocar porta CDP".to_string())?;
 
         let mut cmd = Command::new(&chrome);
         cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()))
@@ -468,8 +479,8 @@ impl ProfileManager {
             }
         }
 
-        // CDP sempre ativo (porta 0 = Chrome escolhe porta livre)
-        cmd.arg("--remote-debugging-port=0");
+        // CDP sempre ativo (porta livre reservada pelo listener acima)
+        cmd.arg(format!("--remote-debugging-port={}", cdp_port));
 
         // Navigate to login URL if credentials are set
         if let Some(ref c) = creds {
@@ -497,46 +508,34 @@ impl ProfileManager {
         }
 
         let mut child = cmd
-            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to launch Chrome: {}", e))?;
 
-        // Lê o stderr do Chrome para capturar a porta CDP real
-        // (quando --remote-debugging-port=0, o Chrome escolhe e loga:
-        //  "DevTools listening on ws://127.0.0.1:PORT/devtools/browser/...")
-        let stderr = child.stderr.take();
+        // Thread de descoberta CDP: faz polling em /json/version ate o Chrome
+        // responder (confirmando que subiu na porta reservada). Entao registra
+        // a porta/wsUrl e LIBERA o listener reservado (drop). Enquanto a thread
+        // nao confirmar, a porta fica reservada pelo SO (sem race de bind).
         let disc_id = id.to_string();
         let disc_registry = registry.clone();
+        let disc_port = cdp_port;
+        let disc_listener = cdp_listener;
         std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            if let Some(s) = stderr {
-                let reader = BufReader::new(s);
-                for line in reader.lines().map_while(Result::ok) {
-                    if let Some(pos) = line.find("DevTools listening on ws://127.0.0.1:") {
-                        let rest = &line[pos + "DevTools listening on ws://127.0.0.1:".len()..];
-                        if let Some(end) = rest.find('/') {
-                            if let Ok(port) = rest[..end].parse::<u16>() {
-                                disc_registry.set_cdp_port(&disc_id, port);
-                                // Busca wsUrl do browser
-                                for _ in 0..25 {
-                                    if let Ok(resp) = reqwest::blocking::get(
-                                        format!("http://127.0.0.1:{}/json/version", port)
-                                    ) {
-                                        if let Ok(v) = resp.json::<serde_json::Value>() {
-                                            if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|w| w.as_str()) {
-                                                disc_registry.set_ws_url(&disc_id, ws.to_string());
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(200));
-                                }
-                                break;
-                            }
+            for _ in 0..50 {
+                if let Ok(resp) = reqwest::blocking::get(
+                    format!("http://127.0.0.1:{}/json/version", disc_port)
+                ) {
+                    if let Ok(v) = resp.json::<serde_json::Value>() {
+                        disc_registry.set_cdp_port(&disc_id, disc_port);
+                        if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|w| w.as_str()) {
+                            disc_registry.set_ws_url(&disc_id, ws.to_string());
                         }
+                        break;
                     }
                 }
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
+            // Libera a porta reservada (Chrome ja a ocupou com sucesso)
+            drop(disc_listener);
         });
 
         #[cfg(target_os = "windows")]
