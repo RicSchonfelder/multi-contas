@@ -53,4 +53,10 @@ impl ProfileRegistry {
             e.ws_url = Some(ws_url);
         }
     }
+
+    pub fn set_cdp_port(&self, profile_id: &str, port: u16) {
+        if let Some(e) = self.active.lock().unwrap().get_mut(profile_id) {
+            e.cdp_port = port;
+        }
+    }
 }

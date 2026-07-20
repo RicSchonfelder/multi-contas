@@ -176,15 +176,6 @@ pub fn resolve_chrome() -> String {
     candidates[0].to_string()
 }
 
-/// Aloca uma porta TCP livre no SO (bind em 0) e a retorna.
-/// O listener e descartado imediatamente; a porta fica livre para o Chrome.
-fn allocate_free_port() -> Option<u16> {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .ok()
-        .and_then(|l| l.local_addr().ok())
-        .map(|a| a.port())
-}
-
 pub struct ProfileStore {
     file_path: PathBuf,
 }
@@ -442,9 +433,9 @@ impl ProfileManager {
         let lock_path = Path::new(&local_dir).join("lock");
         fs::write(&lock_path, std::process::id().to_string()).map_err(|e| e.to_string())?;
 
-        // CDP dinâmico: aloca porta livre do SO e passa explicitamente ao Chrome.
-        // Sempre ativo (não só para auto-login) — o Hermes orquestra via CDP.
-        let cdp_port = allocate_free_port().ok_or_else(|| "Falha ao alocar porta CDP".to_string())?;
+        // CDP sempre ativo. Usa porta 0 para o Chrome escolher uma porta livre
+        // no proprio bind (sem race de alocacao) e lemos a porta real do stderr.
+        let cdp_port: u16 = 0;
 
         let mut cmd = Command::new(&chrome);
         cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()))
@@ -477,8 +468,8 @@ impl ProfileManager {
             }
         }
 
-        // CDP sempre ativo (porta dinâmica alocada acima)
-        cmd.arg(format!("--remote-debugging-port={}", cdp_port));
+        // CDP sempre ativo (porta 0 = Chrome escolhe porta livre)
+        cmd.arg("--remote-debugging-port=0");
 
         // Navigate to login URL if credentials are set
         if let Some(ref c) = creds {
@@ -505,7 +496,48 @@ impl ProfileManager {
             }
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("Failed to launch Chrome: {}", e))?;
+        let mut child = cmd
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to launch Chrome: {}", e))?;
+
+        // Lê o stderr do Chrome para capturar a porta CDP real
+        // (quando --remote-debugging-port=0, o Chrome escolhe e loga:
+        //  "DevTools listening on ws://127.0.0.1:PORT/devtools/browser/...")
+        let stderr = child.stderr.take();
+        let disc_id = id.to_string();
+        let disc_registry = registry.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            if let Some(s) = stderr {
+                let reader = BufReader::new(s);
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Some(pos) = line.find("DevTools listening on ws://127.0.0.1:") {
+                        let rest = &line[pos + "DevTools listening on ws://127.0.0.1:".len()..];
+                        if let Some(end) = rest.find('/') {
+                            if let Ok(port) = rest[..end].parse::<u16>() {
+                                disc_registry.set_cdp_port(&disc_id, port);
+                                // Busca wsUrl do browser
+                                for _ in 0..25 {
+                                    if let Ok(resp) = reqwest::blocking::get(
+                                        format!("http://127.0.0.1:{}/json/version", port)
+                                    ) {
+                                        if let Ok(v) = resp.json::<serde_json::Value>() {
+                                            if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|w| w.as_str()) {
+                                                disc_registry.set_ws_url(&disc_id, ws.to_string());
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
 
         #[cfg(target_os = "windows")]
         {
@@ -532,7 +564,8 @@ impl ProfileManager {
         }
         self.store.save(&all).unwrap();
 
-        // Registra no registry (estado de N perfis ativos)
+        // Registra no registry (estado de N perfis ativos). cdp_port=0 ate
+        // o Chrome reportar a porta real no stderr (thread acima atualiza).
         let child_pid = child.id();
         registry.register(crate::registry::ActiveProfile {
             profile_id: id.to_string(),
@@ -542,32 +575,25 @@ impl ProfileManager {
             started_at: chrono::Utc::now().to_rfc3339(),
         });
 
-        // Descobre o webSocketDebuggerUrl do CDP (para o proxy do Hermes)
-        let disc_id = id.to_string();
-        let disc_port = cdp_port;
-        let disc_registry = registry.clone();
-        std::thread::spawn(move || {
-            for _ in 0..25 {
-                if let Ok(resp) = reqwest::blocking::get(
-                    format!("http://127.0.0.1:{}/json/version", disc_port)
-                ) {
-                    if let Ok(v) = resp.json::<serde_json::Value>() {
-                        if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|w| w.as_str()) {
-                            disc_registry.set_ws_url(&disc_id, ws.to_string());
-                            return;
-                        }
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-        });
-
-        // CDP auto-login only (fingerprint is handled by stealth extension)
+        // CDP auto-login only (fingerprint is handled by stealth extension).
+        // A porta CDP real vem do registry (atualizada pela thread de stderr).
         if creds.is_some() {
             let creds_clone = creds.clone();
+            let al_registry = registry.clone();
+            let al_id = id.to_string();
             std::thread::spawn(move || {
-                if let Some(ref c) = creds_clone {
-                    let _ = crate::cdp::auto_login(cdp_port, &c.email, &c.password, &c.url);
+                // Espera a porta CDP ser descoberta (ate 5s)
+                let mut port = 0u16;
+                for _ in 0..25 {
+                    if let Some(a) = al_registry.get(&al_id) {
+                        if a.cdp_port > 0 { port = a.cdp_port; break; }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                if port > 0 {
+                    if let Some(ref c) = creds_clone {
+                        let _ = crate::cdp::auto_login(port, &c.email, &c.password, &c.url);
+                    }
                 }
             });
         }
