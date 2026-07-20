@@ -145,12 +145,28 @@ pub fn resolve_chrome() -> String {
     if let Ok(path) = std::env::var("CHROME_PATH") {
         if Path::new(&path).exists() { return path; }
     }
-    let candidates = [
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files\\Chromium\\Application\\chrome.exe",
-    ];
-    for c in &candidates {
+    let candidates: &[&str] = if cfg!(target_os = "windows") {
+        &[
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files\\Chromium\\Application\\chrome.exe",
+        ]
+    } else if cfg!(target_os = "macos") {
+        &[
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/usr/local/bin/google-chrome",
+        ]
+    } else {
+        &[
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ]
+    };
+    for c in candidates {
         if Path::new(c).exists() { return c.to_string(); }
     }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
@@ -158,6 +174,15 @@ pub fn resolve_chrome() -> String {
         if Path::new(&user).exists() { return user; }
     }
     candidates[0].to_string()
+}
+
+/// Aloca uma porta TCP livre no SO (bind em 0) e a retorna.
+/// O listener e descartado imediatamente; a porta fica livre para o Chrome.
+fn allocate_free_port() -> Option<u16> {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port())
 }
 
 pub struct ProfileStore {
@@ -391,7 +416,7 @@ impl ProfileManager {
         Ok(r)
     }
 
-    pub fn open(&self, id: &str) -> Result<(), String> {
+    pub fn open(&self, id: &str, registry: std::sync::Arc<crate::registry::ProfileRegistry>) -> Result<(), String> {
         let mut all = self.store.load();
 
         // Clone profile data first, drop the mutable borrow
@@ -417,9 +442,9 @@ impl ProfileManager {
         let lock_path = Path::new(&local_dir).join("lock");
         fs::write(&lock_path, std::process::id().to_string()).map_err(|e| e.to_string())?;
 
-        // CDP port only for auto-login (NOT for fingerprint — use extension instead)
-        let needs_cdp = creds.is_some();
-        let cdp_port = if needs_cdp { 29222 } else { 0 };
+        // CDP dinâmico: aloca porta livre do SO e passa explicitamente ao Chrome.
+        // Sempre ativo (não só para auto-login) — o Hermes orquestra via CDP.
+        let cdp_port = allocate_free_port().ok_or_else(|| "Falha ao alocar porta CDP".to_string())?;
 
         let mut cmd = Command::new(&chrome);
         cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()))
@@ -452,9 +477,8 @@ impl ProfileManager {
             }
         }
 
-        if cdp_port > 0 {
-            cmd.arg(format!("--remote-debugging-port={}", cdp_port));
-        }
+        // CDP sempre ativo (porta dinâmica alocada acima)
+        cmd.arg(format!("--remote-debugging-port={}", cdp_port));
 
         // Navigate to login URL if credentials are set
         if let Some(ref c) = creds {
@@ -508,8 +532,38 @@ impl ProfileManager {
         }
         self.store.save(&all).unwrap();
 
+        // Registra no registry (estado de N perfis ativos)
+        let child_pid = child.id();
+        registry.register(crate::registry::ActiveProfile {
+            profile_id: id.to_string(),
+            cdp_port,
+            child_pid,
+            ws_url: None,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        });
+
+        // Descobre o webSocketDebuggerUrl do CDP (para o proxy do Hermes)
+        let disc_id = id.to_string();
+        let disc_port = cdp_port;
+        let disc_registry = registry.clone();
+        std::thread::spawn(move || {
+            for _ in 0..25 {
+                if let Ok(resp) = reqwest::blocking::get(
+                    format!("http://127.0.0.1:{}/json/version", disc_port)
+                ) {
+                    if let Ok(v) = resp.json::<serde_json::Value>() {
+                        if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|w| w.as_str()) {
+                            disc_registry.set_ws_url(&disc_id, ws.to_string());
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+
         // CDP auto-login only (fingerprint is handled by stealth extension)
-        if cdp_port > 0 && creds.is_some() {
+        if creds.is_some() {
             let creds_clone = creds.clone();
             std::thread::spawn(move || {
                 if let Some(ref c) = creds_clone {
@@ -520,6 +574,7 @@ impl ProfileManager {
 
         let store_path = self.store.file_path.clone();
         let id_clone = id.to_string();
+        let registry_clone = registry.clone();
         thread::spawn(move || {
             let _ = child.wait();
             let store = ProfileStore { file_path: store_path };
@@ -530,6 +585,7 @@ impl ProfileManager {
                     let _ = store.save(&profiles);
                 }
             let _ = fs::remove_file(get_profiles_dir().join(&id_clone).join("lock"));
+            registry_clone.unregister(&id_clone);
             #[cfg(target_os = "windows")]
             if let Some(job) = get_active_jobs().lock().unwrap().remove(&id_clone) {
                 unsafe { CloseHandle(job); }
@@ -539,13 +595,31 @@ impl ProfileManager {
         Ok(())
     }
 
-    pub fn close(&self, id: &str) -> Result<(), String> {
+    pub fn close(&self, id: &str, registry: &std::sync::Arc<crate::registry::ProfileRegistry>) -> Result<(), String> {
+        // Windows: Job Object mata o processo filho ao fechar o handle
         #[cfg(target_os = "windows")]
         {
             let mut jobs = get_active_jobs().lock().unwrap();
             if let Some(job) = jobs.remove(id) {
                 unsafe { CloseHandle(job); }
+                let mut all = self.store.load();
+                if let Some(p) = all.get_mut(id) {
+                    p.status = "available".into();
+                    p.updated_at = chrono::Utc::now().to_rfc3339();
+                    self.store.save(&all).unwrap();
+                }
+                let _ = fs::remove_file(get_profiles_dir().join(id).join("lock"));
+                registry.unregister(id);
                 return Ok(());
+            }
+        }
+        // Unix: mata pelo PID armazenado no registry
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Some(active) = registry.get(id) {
+                let pid = active.child_pid;
+                let _ = std::process::Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+                registry.unregister(id);
             }
         }
         let mut all = self.store.load();
@@ -571,22 +645,24 @@ impl ProfileManager {
         if dirty { let _ = self.store.save(&all); }
     }
 
-    pub fn export_cookies(&self, id: &str) -> Result<String, String> {
+    pub fn export_cookies(&self, id: &str, registry: &std::sync::Arc<crate::registry::ProfileRegistry>) -> Result<String, String> {
         let all = self.store.load();
         let p = all.get(id).ok_or_else(|| "Profile not found".to_string())?;
         if p.status != "in_use" {
             return Err("Profile must be open to export cookies".into());
         }
-        crate::cdp::export_cookies(29222, id)
+        let port = registry.get(id).map(|a| a.cdp_port).ok_or_else(|| "CDP port not found".to_string())?;
+        crate::cdp::export_cookies(port, id)
     }
 
-    pub fn import_cookies(&self, id: &str, cookies_json: &str) -> Result<(), String> {
+    pub fn import_cookies(&self, id: &str, cookies_json: &str, registry: &std::sync::Arc<crate::registry::ProfileRegistry>) -> Result<(), String> {
         let all = self.store.load();
         let p = all.get(id).ok_or_else(|| "Profile not found".to_string())?;
         if p.status != "in_use" {
             return Err("Profile must be open to import cookies".into());
         }
-        crate::cdp::import_cookies(29222, cookies_json)
+        let port = registry.get(id).map(|a| a.cdp_port).ok_or_else(|| "CDP port not found".to_string())?;
+        crate::cdp::import_cookies(port, cookies_json)
     }
 
     fn is_active(&self, id: &str) -> bool {

@@ -1,10 +1,15 @@
 pub mod profile;
 pub mod cdp;
+pub mod registry;
+pub mod hermes;
 
+use std::sync::Arc;
 use profile::{Profile, ProfileGroup, ProfileManager, ProxyConfig, Credentials, FingerprintConfig, Extension};
+use registry::ProfileRegistry;
 
 struct AppState {
-    manager: ProfileManager,
+    manager: Arc<ProfileManager>,
+    registry: Arc<ProfileRegistry>,
 }
 
 #[tauri::command]
@@ -44,22 +49,22 @@ fn set_profile_fingerprint(state: tauri::State<AppState>, id: String, fingerprin
 
 #[tauri::command]
 fn open_profile(state: tauri::State<AppState>, id: String) -> Result<(), String> {
-    state.manager.open(&id)
+    state.manager.open(&id, state.registry.clone())
 }
 
 #[tauri::command]
 fn close_profile(state: tauri::State<AppState>, id: String) -> Result<(), String> {
-    state.manager.close(&id)
+    state.manager.close(&id, &state.registry.clone())
 }
 
 #[tauri::command]
 fn export_profile_cookies(state: tauri::State<AppState>, id: String) -> Result<String, String> {
-    state.manager.export_cookies(&id)
+    state.manager.export_cookies(&id, &state.registry.clone())
 }
 
 #[tauri::command]
 fn import_profile_cookies(state: tauri::State<AppState>, id: String, cookies_json: String) -> Result<(), String> {
-    state.manager.import_cookies(&id, &cookies_json)
+    state.manager.import_cookies(&id, &cookies_json, &state.registry.clone())
 }
 
 #[tauri::command]
@@ -110,11 +115,15 @@ fn set_profile_group(state: tauri::State<AppState>, profile_id: String, group_id
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let manager = ProfileManager::new();
+    let manager = Arc::new(ProfileManager::new());
     manager.recover();
+    let registry = Arc::new(ProfileRegistry::new());
+
+    // Inicia o servidor Hermes (HTTP local p/ orquestracao multi-conta)
+    crate::hermes::HermesServer::new().start(manager.clone(), registry.clone());
 
     tauri::Builder::default()
-        .manage(AppState { manager })
+        .manage(AppState { manager, registry })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_profiles,
