@@ -74,10 +74,41 @@ Rotas principais:
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | `GET` | `/api/v1/health` | Status do servidor |
-| `GET` | `/api/v1/profiles` | Lista os perfis cadastrados |
-| `POST` | `/api/v1/profiles/:id/start` | Inicia o perfil (abre o Chrome) |
-| `POST` | `/api/v1/profiles/:id/stop` | Encerra o perfil |
-| `POST` | `/api/v1/profiles/:id/command` | Executa um comando CDP no perfil |
+| `GET` | `/api/v1/profiles` | Lista os perfis (com a porta CDP de cada um aberto) |
+| `POST` | `/api/v1/profiles/open-all` | Abre TODOS os perfis disponíveis (cada um numa porta CDP única) |
+| `POST` | `/api/v1/profiles/open-all-and-navigate` | Abre todos e manda cada um navegar para `{"url": "..."}` |
+| `POST` | `/api/v1/profiles/:id/open` | Abre um perfil específico |
+| `POST` | `/api/v1/profiles/:id/close` | Encerra o perfil |
+| `POST` | `/api/v1/profiles/:id/navigate` | Navega o perfil para `{"url": "..."}` |
+| `POST` | `/api/v1/profiles/:id/comment` | Comenta `{"text": "..."}` (ex.: YouTube live-chat) a partir daquele perfil |
+
+Autenticação: header `X-Control-Token` (ou `Authorization: Bearer <token>`), com o token lido de `%LOCALAPPDATA%/MultiContas/control_token`. O servidor escuta **somente em `127.0.0.1`**.
+
+### 🎬 Caso de uso: mesma live em várias contas + comentar de cada uma
+
+Cada perfil aberto recebe uma **porta CDP única e estável** (alocada com um listener
+reservado — sem race condition, a janela do Chrome sempre abre). O script de
+orquestração `apps/desktop/scripts/orchestrate.mjs` faz o fluxo completo:
+
+```bash
+# Abre TODAS as contas e manda cada uma pra live (URL padrão ou a informada)
+node apps/desktop/scripts/orchestrate.mjs "https://www.youtube.com/live/g7Qhgx48odw?si=-1M-yjXDW-XtLAku"
+
+# Comenta o mesmo texto em TODAS as contas abertas
+node apps/desktop/scripts/orchestrate.mjs comment "Fala galera, live insana!"
+
+# Comenta em UMA conta específica (pelo id)
+node apps/desktop/scripts/orchestrate.mjs comment "Oi" <profileId>
+
+# Fecha todas as contas
+node apps/desktop/scripts/orchestrate.mjs close-all
+```
+
+> ⚠️ **Comentário no YouTube:** o comando `comment` tenta primeiro o live-chat
+> (`yt-live-chat-text-input-field-renderer`) e cai na caixa de comentários normal
+> se não achar. Só funciona se a **live já tiver iniciado** e a caixa de chat
+> estiver visível naquela conta. Requer que cada conta já esteja logada (credenciais
+> salvas no perfil).
 
 > Tudo roda localmente na sua máquina — nenhum dado ou comando sai do seu computador.
 

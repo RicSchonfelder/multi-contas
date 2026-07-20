@@ -1,31 +1,54 @@
-use serde_json::{json, Value};
-use std::time::Duration;
-use std::fs;
-use std::path::Path;
-use std::env;
-use tungstenite::{Message, WebSocket};
-use tungstenite::stream::MaybeTlsStream;
-use std::net::TcpStream;
 use crate::profile::FingerprintConfig;
+use serde_json::{json, Value};
+use std::env;
+use std::fs;
+use std::net::TcpStream;
+use std::path::Path;
+use std::time::Duration;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{Message, WebSocket};
 
-fn get_ws_url(port: u16) -> Result<String, String> {
+pub fn get_ws_url(port: u16) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{}/json", port);
-    let resp = reqwest::blocking::get(&url)
-        .map_err(|e| format!("CDP connect: {}", e))?;
-    let targets: Vec<Value> = resp.json().map_err(|e| format!("CDP JSON: {}", e))?;
-    for t in &targets {
-        if t["type"] == "page" {
-            return Ok(t["webSocketDebuggerUrl"].as_str().unwrap_or("").to_string());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match reqwest::blocking::get(&url) {
+            Ok(resp) => {
+                if let Ok(targets) = resp.json::<Vec<Value>>() {
+                    for t in &targets {
+                        if t["type"] == "page" {
+                            return Ok(t["webSocketDebuggerUrl"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string());
+                        }
+                    }
+                    if let Some(t) = targets.first() {
+                        return Ok(t["webSocketDebuggerUrl"]
+                            .as_str()
+                            .map(String::from)
+                            .unwrap_or_default());
+                    }
+                }
+            }
+            Err(_) => {}
         }
+        if std::time::Instant::now() >= deadline {
+            return Err("CDP timeout after 10s".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    targets.first()
-        .and_then(|t| t["webSocketDebuggerUrl"].as_str().map(String::from))
-        .ok_or("No page target".into())
 }
 
-fn send_cmd(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, id: i64, method: &str, params: Value) -> Result<Value, String> {
+fn send_cmd(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    id: i64,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     let msg = json!({"id": id, "method": method, "params": params});
-    ws.send(Message::text(msg.to_string())).map_err(|e| format!("CDP send: {}", e))?;
+    ws.send(Message::text(msg.to_string()))
+        .map_err(|e| format!("CDP send: {}", e))?;
     loop {
         match ws.read() {
             Ok(Message::Text(t)) => {
@@ -42,7 +65,11 @@ fn send_cmd(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, id: i64, method: &str
     }
 }
 
-fn wait_for(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, event: &str, timeout: Duration) -> Result<Value, String> {
+fn wait_for(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    event: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
         match ws.read() {
@@ -69,22 +96,70 @@ pub fn apply_fingerprint(port: u16, fp: &FingerprintConfig) -> Result<(), String
     let port2 = parsed.port().unwrap_or(port);
     let path = parsed.path();
     let addr = format!("ws://{}:{}{}", host, port2, path);
-    let mut ws = tungstenite::connect(&addr).map_err(|e| format!("CDP WS: {}", e))?.0;
+    let mut ws = tungstenite::connect(&addr)
+        .map_err(|e| format!("CDP WS: {}", e))?
+        .0;
 
     send_cmd(&mut ws, 1, "Page.enable", json!({}))?;
 
     // Build spoofing script
-    let ua = if fp.user_agent.is_empty() { "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36".to_string() } else { fp.user_agent.clone() };
-    let platform = if fp.platform.is_empty() { "Win32".to_string() } else { fp.platform.clone() };
-    let lang = if fp.language.is_empty() { "pt-BR".to_string() } else { fp.language.clone() };
-    let resolution = if fp.resolution.is_empty() { "1920x1080".to_string() } else { fp.resolution.clone() };
-    let vendor = if fp.webgl_vendor.is_empty() { "Google Inc. (Intel)".to_string() } else { fp.webgl_vendor.clone() };
-    let renderer = if fp.webgl_renderer.is_empty() { "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0)".to_string() } else { fp.webgl_renderer.clone() };
-    let tz = if fp.timezone.is_empty() { "America/Sao_Paulo".to_string() } else { fp.timezone.clone() };
-    let geo = if fp.geolocation.is_empty() { "-23.5505,-46.6333".to_string() } else { fp.geolocation.clone() };
-    let fonts_json = if fp.fonts.is_empty() { json!(["Arial","Courier New","Georgia","Times New Roman","Verdana","Segoe UI","Roboto","Open Sans"]) } else { json!(fp.fonts) };
+    let ua = if fp.user_agent.is_empty() {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36".to_string()
+    } else {
+        fp.user_agent.clone()
+    };
+    let platform = if fp.platform.is_empty() {
+        "Win32".to_string()
+    } else {
+        fp.platform.clone()
+    };
+    let lang = if fp.language.is_empty() {
+        "pt-BR".to_string()
+    } else {
+        fp.language.clone()
+    };
+    let resolution = if fp.resolution.is_empty() {
+        "1920x1080".to_string()
+    } else {
+        fp.resolution.clone()
+    };
+    let vendor = if fp.webgl_vendor.is_empty() {
+        "Google Inc. (Intel)".to_string()
+    } else {
+        fp.webgl_vendor.clone()
+    };
+    let renderer = if fp.webgl_renderer.is_empty() {
+        "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0)".to_string()
+    } else {
+        fp.webgl_renderer.clone()
+    };
+    let tz = if fp.timezone.is_empty() {
+        "America/Sao_Paulo".to_string()
+    } else {
+        fp.timezone.clone()
+    };
+    let geo = if fp.geolocation.is_empty() {
+        "-23.5505,-46.6333".to_string()
+    } else {
+        fp.geolocation.clone()
+    };
+    let fonts_json = if fp.fonts.is_empty() {
+        json!([
+            "Arial",
+            "Courier New",
+            "Georgia",
+            "Times New Roman",
+            "Verdana",
+            "Segoe UI",
+            "Roboto",
+            "Open Sans"
+        ])
+    } else {
+        json!(fp.fonts)
+    };
 
-    let spoof_js = format!(r#"
+    let spoof_js = format!(
+        r#"
 (function() {{
     const UA = {ua_json};
     const PLATFORM = {platform_json};
@@ -229,7 +304,12 @@ pub fn apply_fingerprint(port: u16, fp: &FingerprintConfig) -> Result<(), String
         audio = if fp.audio_noise { "true" } else { "false" },
     );
 
-    send_cmd(&mut ws, 2, "Page.addScriptToEvaluateOnNewDocument", json!({"source": &spoof_js}))?;
+    send_cmd(
+        &mut ws,
+        2,
+        "Page.addScriptToEvaluateOnNewDocument",
+        json!({"source": &spoof_js}),
+    )?;
 
     Ok(())
 }
@@ -242,7 +322,9 @@ pub fn export_cookies(port: u16, profile_id: &str) -> Result<String, String> {
     let port2 = parsed.port().unwrap_or(port);
     let path = parsed.path();
     let addr = format!("ws://{}:{}{}", host, port2, path);
-    let mut ws = tungstenite::connect(&addr).map_err(|e| format!("CDP WS: {}", e))?.0;
+    let mut ws = tungstenite::connect(&addr)
+        .map_err(|e| format!("CDP WS: {}", e))?
+        .0;
 
     send_cmd(&mut ws, 1, "Network.enable", json!({}))?;
 
@@ -255,11 +337,17 @@ pub fn export_cookies(port: u16, profile_id: &str) -> Result<String, String> {
     });
 
     let local = env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:".to_string());
-    let dir = Path::new(&local).join("MultiContas").join("profiles").join(profile_id);
+    let dir = Path::new(&local)
+        .join("MultiContas")
+        .join("profiles")
+        .join(profile_id);
     fs::create_dir_all(&dir).map_err(|e| format!("Dir create: {}", e))?;
     let file_path = dir.join("cookies.json");
-    fs::write(&file_path, serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("File write: {}", e))?;
+    fs::write(
+        &file_path,
+        serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("File write: {}", e))?;
 
     Ok(serde_json::to_string(&cookies).map_err(|e| e.to_string())?)
 }
@@ -272,22 +360,37 @@ pub fn import_cookies(port: u16, cookies_json: &str) -> Result<(), String> {
     let port2 = parsed.port().unwrap_or(port);
     let path = parsed.path();
     let addr = format!("ws://{}:{}{}", host, port2, path);
-    let mut ws = tungstenite::connect(&addr).map_err(|e| format!("CDP WS: {}", e))?.0;
+    let mut ws = tungstenite::connect(&addr)
+        .map_err(|e| format!("CDP WS: {}", e))?
+        .0;
 
     send_cmd(&mut ws, 1, "Network.enable", json!({}))?;
 
-    let cookies: Vec<Value> = serde_json::from_str(cookies_json)
-        .map_err(|e| format!("JSON parse: {}", e))?;
+    let cookies: Vec<Value> =
+        serde_json::from_str(cookies_json).map_err(|e| format!("JSON parse: {}", e))?;
 
     for (i, cookie) in cookies.iter().enumerate() {
         let name = cookie["name"].as_str().unwrap_or("");
         let value = cookie["value"].as_str().unwrap_or("");
         let domain = cookie["domain"].as_str().unwrap_or("");
         let cpath = cookie["path"].as_str().unwrap_or("/");
-        let secure = cookie.get("secure").and_then(|v| v.as_bool()).unwrap_or(false);
-        let http_only = cookie.get("httpOnly").and_then(|v| v.as_bool()).unwrap_or(false);
-        let same_site = cookie.get("sameSite").and_then(|v| v.as_str()).unwrap_or("None");
-        let expires = cookie.get("expires").or_else(|| cookie.get("expiry")).and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        let secure = cookie
+            .get("secure")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let http_only = cookie
+            .get("httpOnly")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let same_site = cookie
+            .get("sameSite")
+            .and_then(|v| v.as_str())
+            .unwrap_or("None");
+        let expires = cookie
+            .get("expires")
+            .or_else(|| cookie.get("expiry"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(-1.0);
 
         let mut params = json!({
             "name": name,
@@ -319,19 +422,25 @@ pub fn auto_login(port: u16, email: &str, password: &str, url: &str) -> Result<(
     let addr = format!("ws://{}:{}{}", host, port2, path);
 
     let mut ws = tungstenite::connect(&addr)
-        .map_err(|e| format!("CDP WS: {}", e))?.0;
+        .map_err(|e| format!("CDP WS: {}", e))?
+        .0;
 
     // Navigate
     send_cmd(&mut ws, 1, "Page.enable", json!({}))?;
 
-    let nav_url = if url.is_empty() { "https://accounts.google.com" } else { url };
+    let nav_url = if url.is_empty() {
+        "https://accounts.google.com"
+    } else {
+        url
+    };
     send_cmd(&mut ws, 2, "Page.navigate", json!({"url": nav_url}))?;
 
     // Wait for page load
     wait_for(&mut ws, "Page.loadEventFired", Duration::from_secs(15))?;
 
     // Inject and run auto-fill script
-    let js = format!(r#"
+    let js = format!(
+        r#"
 (async () => {{
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
     const findVisible = (sel, root = document) => {{
@@ -392,11 +501,128 @@ pub fn auto_login(port: u16, email: &str, password: &str, url: &str) -> Result<(
         pass_json = serde_json::to_string(password).unwrap_or_default(),
     );
 
-    send_cmd(&mut ws, 3, "Runtime.evaluate", json!({
-        "expression": &js,
-        "awaitPromise": true,
-        "userGesture": true
-    }))?;
+    send_cmd(
+        &mut ws,
+        3,
+        "Runtime.evaluate",
+        json!({
+            "expression": &js,
+            "awaitPromise": true,
+            "userGesture": true
+        }),
+    )?;
 
+    Ok(())
+}
+
+/// Navega o perfil (porta CDP) para uma URL.
+pub fn navigate(port: u16, url: &str) -> Result<(), String> {
+    let ws_url = get_ws_url(port)?;
+    let parsed = url::Url::parse(&ws_url).map_err(|e| format!("URL parse: {}", e))?;
+    let host = parsed.host_str().unwrap_or("127.0.0.1");
+    let port2 = parsed.port().unwrap_or(port);
+    let path = parsed.path();
+    let addr = format!("ws://{}:{}{}", host, port2, path);
+    let mut ws = tungstenite::connect(&addr)
+        .map_err(|e| format!("CDP WS: {}", e))?
+        .0;
+
+    send_cmd(&mut ws, 1, "Page.enable", json!({}))?;
+    send_cmd(&mut ws, 2, "Page.navigate", json!({ "url": url }))?;
+    // aguarda o carregamento (best-effort)
+    let _ = wait_for(&mut ws, "Page.loadEventFired", Duration::from_secs(20));
+    Ok(())
+}
+
+/// Envia um comentário no YouTube a partir deste perfil (porta CDP).
+/// Tenta primeiro o live-chat (transmissão ao vivo) e, se não achar,
+/// cai na caixa de comentários normal do vídeo.
+pub fn send_comment(port: u16, text: &str) -> Result<(), String> {
+    let ws_url = get_ws_url(port)?;
+    let parsed = url::Url::parse(&ws_url).map_err(|e| format!("URL parse: {}", e))?;
+    let host = parsed.host_str().unwrap_or("127.0.0.1");
+    let port2 = parsed.port().unwrap_or(port);
+    let path = parsed.path();
+    let addr = format!("ws://{}:{}{}", host, port2, path);
+    let mut ws = tungstenite::connect(&addr)
+        .map_err(|e| format!("CDP WS: {}", e))?
+        .0;
+
+    send_cmd(&mut ws, 1, "Page.enable", json!({}))?;
+
+    let txt_json = serde_json::to_string(text).unwrap_or_default();
+    let js = format!(
+        r#"
+(async () => {{
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const SELS = [
+        '#live-chat-input .yt-live-chat-text-input-field-renderer',
+        '#input.yt-live-chat-text-input-field-renderer',
+        '#contenteditable-root',          // live-chat (Polymer)
+        'yt-formatted-string#contenteditable-root',
+        '#stamina-comment-text-input',    // fallback comment box
+        'ytd-commentbox #contenteditable-root',
+        '#contenteditable-textarea'
+    ];
+    let el = null;
+    for (const s of SELS) {{
+        const found = document.querySelector(s);
+        if (found && found.offsetParent !== null) {{ el = found; break; }}
+    }}
+    if (!el) return "NO_INPUT";
+
+    el.focus();
+    // insere o texto respeitando o React/Polymer
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, 'innerText');
+    if (setter && setter.set) setter.set.call(el, {text});
+    else el.innerText = {text};
+
+    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    await wait(400);
+
+    // tenta enviar: Enter (live-chat) ou botão
+    const sendBtns = [
+        '#send-button button',
+        'button[aria-label="Enviar"]',
+        'yt-button-renderer#send-button button',
+        'ytd-button-renderer#submit-button button'
+    ];
+    for (const b of sendBtns) {{
+        const btn = document.querySelector(b);
+        if (btn && btn.offsetParent !== null) {{ btn.click(); return "SENT_BUTTON"; }}
+    }}
+    const ev = new KeyboardEvent('keydown', {{ key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }});
+    el.dispatchEvent(ev);
+    return "SENT_ENTER";
+}})();
+"#,
+        text = txt_json
+    );
+
+    let result = send_cmd(
+        &mut ws,
+        2,
+        "Runtime.evaluate",
+        json!({
+            "expression": &js,
+            "awaitPromise": true,
+            "returnByValue": true,
+            "userGesture": true
+        }),
+    )?;
+
+    let outcome = result
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+
+    if outcome == "NO_INPUT" {
+        return Err(
+            "Caixa de comentário não encontrada (vídeo pode não ter iniciado ou não é comentável)"
+                .into(),
+        );
+    }
     Ok(())
 }

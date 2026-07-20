@@ -1,23 +1,24 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, SetInformationJobObject, AssignProcessToJobObject,
-    JobObjectExtendedLimitInformation, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{HANDLE, CloseHandle};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -123,17 +124,17 @@ pub struct Profile {
 }
 
 #[cfg(target_os = "windows")]
-static ACTIVE_JOBS: std::sync::OnceLock<Mutex<HashMap<String, HANDLE>>> = std::sync::OnceLock::new();
+static ACTIVE_JOBS: std::sync::OnceLock<Mutex<HashMap<String, HANDLE>>> =
+    std::sync::OnceLock::new();
 
 #[cfg(target_os = "windows")]
 fn get_active_jobs() -> &'static Mutex<HashMap<String, HANDLE>> {
     ACTIVE_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_app_dir() -> PathBuf {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".to_string())
-    });
+pub fn get_app_dir() -> PathBuf {
+    let local = std::env::var("LOCALAPPDATA")
+        .unwrap_or_else(|_| std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".to_string()));
     PathBuf::from(local).join("MultiContas")
 }
 
@@ -143,7 +144,9 @@ fn get_profiles_dir() -> PathBuf {
 
 pub fn resolve_chrome() -> String {
     if let Ok(path) = std::env::var("CHROME_PATH") {
-        if Path::new(&path).exists() { return path; }
+        if Path::new(&path).exists() {
+            return path;
+        }
     }
     let candidates = [
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -151,13 +154,26 @@ pub fn resolve_chrome() -> String {
         "C:\\Program Files\\Chromium\\Application\\chrome.exe",
     ];
     for c in &candidates {
-        if Path::new(c).exists() { return c.to_string(); }
+        if Path::new(c).exists() {
+            return c.to_string();
+        }
     }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         let user = format!("{}\\Google\\Chrome\\Application\\chrome.exe", local);
-        if Path::new(&user).exists() { return user; }
+        if Path::new(&user).exists() {
+            return user;
+        }
     }
     candidates[0].to_string()
+}
+
+/// Reserva uma porta TCP livre mantendo o listener VIVO até o Chrome fazer o
+/// bind — elimina a race condition (outro processo pegando a porta no intervalo
+/// entre o `drop` e o bind do Chrome, que fazia a janela não abrir).
+pub fn allocate_free_port() -> Option<(u16, TcpListener)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let port = listener.local_addr().ok()?.port();
+    Some((port, listener))
 }
 
 pub struct ProfileStore {
@@ -168,11 +184,15 @@ impl ProfileStore {
     fn new() -> Self {
         let dir = get_app_dir();
         let _ = fs::create_dir_all(&dir);
-        Self { file_path: dir.join("profiles.json") }
+        Self {
+            file_path: dir.join("profiles.json"),
+        }
     }
 
     fn load(&self) -> HashMap<String, Profile> {
-        if !self.file_path.exists() { return HashMap::new(); }
+        if !self.file_path.exists() {
+            return HashMap::new();
+        }
         fs::read_to_string(&self.file_path)
             .ok()
             .and_then(|c| serde_json::from_str(&c).ok())
@@ -199,11 +219,15 @@ impl GroupStore {
     fn new() -> Self {
         let dir = get_app_dir();
         let _ = fs::create_dir_all(&dir);
-        Self { file_path: dir.join("groups.json") }
+        Self {
+            file_path: dir.join("groups.json"),
+        }
     }
 
     fn load(&self) -> HashMap<String, ProfileGroup> {
-        if !self.file_path.exists() { return HashMap::new(); }
+        if !self.file_path.exists() {
+            return HashMap::new();
+        }
         fs::read_to_string(&self.file_path)
             .ok()
             .and_then(|c| serde_json::from_str(&c).ok())
@@ -229,7 +253,10 @@ pub struct ProfileManager {
 
 impl ProfileManager {
     pub fn new() -> Self {
-        Self { store: ProfileStore::new(), group_store: GroupStore::new() }
+        Self {
+            store: ProfileStore::new(),
+            group_store: GroupStore::new(),
+        }
     }
 
     pub fn list_groups(&self) -> Vec<ProfileGroup> {
@@ -239,8 +266,20 @@ impl ProfileManager {
     pub fn create_group(&self, name: String, color: String) -> io::Result<ProfileGroup> {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        let max_order = self.group_store.load().values().map(|g| g.sort_order).max().unwrap_or(0);
-        let g = ProfileGroup { id: id.clone(), name, color, sort_order: max_order + 1, created_at: now };
+        let max_order = self
+            .group_store
+            .load()
+            .values()
+            .map(|g| g.sort_order)
+            .max()
+            .unwrap_or(0);
+        let g = ProfileGroup {
+            id: id.clone(),
+            name,
+            color,
+            sort_order: max_order + 1,
+            created_at: now,
+        };
         let mut all = self.group_store.load();
         all.insert(id, g.clone());
         self.group_store.save(&all)?;
@@ -249,7 +288,9 @@ impl ProfileManager {
 
     pub fn update_group(&self, id: &str, name: String, color: String) -> io::Result<ProfileGroup> {
         let mut all = self.group_store.load();
-        let g = all.get_mut(id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "group not found"))?;
+        let g = all
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "group not found"))?;
         g.name = name;
         g.color = color;
         let r = g.clone();
@@ -272,9 +313,15 @@ impl ProfileManager {
         Ok(())
     }
 
-    pub fn set_profile_group(&self, profile_id: &str, group_id: Option<String>) -> io::Result<Profile> {
+    pub fn set_profile_group(
+        &self,
+        profile_id: &str,
+        group_id: Option<String>,
+    ) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(profile_id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "profile not found"))?;
+        let p = all
+            .get_mut(profile_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "profile not found"))?;
         p.group_id = group_id;
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
@@ -286,17 +333,33 @@ impl ProfileManager {
         self.store.load().values().cloned().collect()
     }
 
-    pub fn create(&self, name: String, color: String, description: String, tags: Vec<String>, credentials: Option<Credentials>, fingerprint: Option<FingerprintConfig>) -> io::Result<Profile> {
+    pub fn create(
+        &self,
+        name: String,
+        color: String,
+        description: String,
+        tags: Vec<String>,
+        credentials: Option<Credentials>,
+        fingerprint: Option<FingerprintConfig>,
+    ) -> io::Result<Profile> {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let dir = get_profiles_dir().join(&id);
         fs::create_dir_all(&dir)?;
 
         let p = Profile {
-            id: id.clone(), name, color, description, tags,
-            status: "available".into(), proxy: None, credentials, fingerprint,
+            id: id.clone(),
+            name,
+            color,
+            description,
+            tags,
+            status: "available".into(),
+            proxy: None,
+            credentials,
+            fingerprint,
             local_dir: dir.to_string_lossy().to_string(),
-            created_at: now.clone(), updated_at: now,
+            created_at: now.clone(),
+            updated_at: now,
             last_opened_at: None,
             group_id: None,
             extensions: Vec::new(),
@@ -307,13 +370,30 @@ impl ProfileManager {
         Ok(p)
     }
 
-    pub fn update(&self, id: &str, name: Option<String>, color: Option<String>, description: Option<String>, tags: Option<Vec<String>>) -> io::Result<Profile> {
+    pub fn update(
+        &self,
+        id: &str,
+        name: Option<String>,
+        color: Option<String>,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
-        if let Some(n) = name { p.name = n; }
-        if let Some(c) = color { p.color = c; }
-        if let Some(d) = description { p.description = d; }
-        if let Some(t) = tags { p.tags = t; }
+        let p = all
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        if let Some(n) = name {
+            p.name = n;
+        }
+        if let Some(c) = color {
+            p.color = c;
+        }
+        if let Some(d) = description {
+            p.description = d;
+        }
+        if let Some(t) = tags {
+            p.tags = t;
+        }
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
         self.store.save(&all)?;
@@ -329,9 +409,15 @@ impl ProfileManager {
         Ok(())
     }
 
-    pub fn set_fingerprint(&self, id: &str, fingerprint: Option<FingerprintConfig>) -> io::Result<Profile> {
+    pub fn set_fingerprint(
+        &self,
+        id: &str,
+        fingerprint: Option<FingerprintConfig>,
+    ) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        let p = all
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
         p.fingerprint = fingerprint;
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
@@ -339,9 +425,15 @@ impl ProfileManager {
         Ok(r)
     }
 
-    pub fn set_credentials(&self, id: &str, credentials: Option<Credentials>) -> io::Result<Profile> {
+    pub fn set_credentials(
+        &self,
+        id: &str,
+        credentials: Option<Credentials>,
+    ) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        let p = all
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
         p.credentials = credentials;
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
@@ -351,7 +443,9 @@ impl ProfileManager {
 
     pub fn set_proxy(&self, id: &str, proxy: Option<ProxyConfig>) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        let p = all
+            .get_mut(id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
         p.proxy = proxy;
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
@@ -361,7 +455,9 @@ impl ProfileManager {
 
     pub fn add_extension(&self, profile_id: &str, ext: Extension) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(profile_id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        let p = all
+            .get_mut(profile_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
         p.extensions.push(ext);
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
@@ -371,7 +467,9 @@ impl ProfileManager {
 
     pub fn remove_extension(&self, profile_id: &str, ext_id: &str) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(profile_id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        let p = all
+            .get_mut(profile_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
         p.extensions.retain(|e| e.id != ext_id);
         p.updated_at = chrono::Utc::now().to_rfc3339();
         let r = p.clone();
@@ -379,9 +477,16 @@ impl ProfileManager {
         Ok(r)
     }
 
-    pub fn toggle_extension(&self, profile_id: &str, ext_id: &str, enabled: bool) -> io::Result<Profile> {
+    pub fn toggle_extension(
+        &self,
+        profile_id: &str,
+        ext_id: &str,
+        enabled: bool,
+    ) -> io::Result<Profile> {
         let mut all = self.store.load();
-        let p = all.get_mut(profile_id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
+        let p = all
+            .get_mut(profile_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
         if let Some(ext) = p.extensions.iter_mut().find(|e| e.id == ext_id) {
             ext.enabled = enabled;
         }
@@ -391,7 +496,7 @@ impl ProfileManager {
         Ok(r)
     }
 
-    pub fn open(&self, id: &str) -> Result<(), String> {
+    pub fn open(&self, id: &str, registry: Arc<ProfileRegistry>) -> Result<u16, String> {
         let mut all = self.store.load();
 
         // Clone profile data first, drop the mutable borrow
@@ -400,10 +505,15 @@ impl ProfileManager {
         let creds = all.get(id).unwrap().credentials.clone();
         let fp = all.get(id).unwrap().fingerprint.clone();
         let status = all.get(id).unwrap().status.clone();
-        let exts = all.get(id).map(|p| p.extensions.clone()).unwrap_or_default();
+        let exts = all
+            .get(id)
+            .map(|p| p.extensions.clone())
+            .unwrap_or_default();
 
         if status == "in_use" {
-            if self.is_active(id) { return Err("Profile already open".into()); }
+            if self.is_active(id) {
+                return Err("Profile already open".into());
+            }
         }
 
         let chrome = resolve_chrome();
@@ -417,18 +527,18 @@ impl ProfileManager {
         let lock_path = Path::new(&local_dir).join("lock");
         fs::write(&lock_path, std::process::id().to_string()).map_err(|e| e.to_string())?;
 
-        // CDP port for auto-login + fingerprint
-        let needs_cdp = creds.is_some() || fp.as_ref().map_or(false, |f| f.enabled);
-        let cdp_port = if needs_cdp { 29222 } else { 0 };
+        // Porta CDP ÚNICA por perfil: reserva via listener vivo (sem race -> janela sempre abre)
+        let (cdp_port, cdp_listener) = allocate_free_port()
+            .ok_or_else(|| "Não foi possível reservar uma porta CDP livre".to_string())?;
 
         let mut cmd = Command::new(&chrome);
         cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()))
-           .arg("--no-first-run")
-           .arg("--no-default-browser-check")
-           .arg("--disable-blink-features=AutomationControlled")
-           .arg("--disable-features=ChromeWhatsNewUI,ChromeTipsInMainMenu")
-           .arg("--disable-sync")
-           .arg("--no-pings");
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--disable-blink-features=AutomationControlled")
+            .arg("--disable-features=ChromeWhatsNewUI,ChromeTipsInMainMenu")
+            .arg("--disable-sync")
+            .arg("--no-pings");
 
         // Anti-fingerprint flags
         cmd.arg("--disable-webrtc-peer-connection-for-encryption");
@@ -436,9 +546,9 @@ impl ProfileManager {
         cmd.arg("--disable-remote-fonts");
         cmd.arg("--disable-client-side-phishing-detection");
 
-        if cdp_port > 0 {
-            cmd.arg(format!("--remote-debugging-port={}", cdp_port));
-        }
+        // CDP sempre ligado (cada perfil numa porta própria)
+        cmd.arg(format!("--remote-debugging-port={}", cdp_port));
+        cmd.arg("--remote-debugging-address=127.0.0.1");
 
         // Navigate to login URL if credentials are set
         if let Some(ref c) = creds {
@@ -451,9 +561,15 @@ impl ProfileManager {
             if let Some(ref pac) = proxy_cfg.pac_url {
                 cmd.arg(format!("--proxy-pac-url={}", pac));
             } else {
-                cmd.arg(format!("--proxy-server={}://{}:{}", proxy_cfg.proxy_type, proxy_cfg.host, proxy_cfg.port));
+                cmd.arg(format!(
+                    "--proxy-server={}://{}:{}",
+                    proxy_cfg.proxy_type, proxy_cfg.host, proxy_cfg.port
+                ));
                 if !proxy_cfg.bypass_list.is_empty() {
-                    cmd.arg(format!("--proxy-bypass-list={}", proxy_cfg.bypass_list.join(";")));
+                    cmd.arg(format!(
+                        "--proxy-bypass-list={}",
+                        proxy_cfg.bypass_list.join(";")
+                    ));
                 }
             }
         }
@@ -465,7 +581,10 @@ impl ProfileManager {
             }
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("Failed to launch Chrome: {}", e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to launch Chrome: {}", e))?;
+        let pid = child.id();
 
         #[cfg(target_os = "windows")]
         {
@@ -475,11 +594,17 @@ impl ProfileManager {
                 if job != 0 {
                     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
                     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                    SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                    SetInformationJobObject(
+                        job,
+                        JobObjectExtendedLimitInformation,
                         &info as *const _ as *const std::ffi::c_void,
-                        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+                        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                    );
                     AssignProcessToJobObject(job, handle);
-                    get_active_jobs().lock().unwrap().insert(id.to_string(), job);
+                    get_active_jobs()
+                        .lock()
+                        .unwrap()
+                        .insert(id.to_string(), job);
                 }
             }
         }
@@ -492,8 +617,21 @@ impl ProfileManager {
         }
         self.store.save(&all).unwrap();
 
-        // CDP operations (fingerprint + auto-login)
-        if cdp_port > 0 {
+        // Registra a porta no registry compartilhado (Hermes + Tauri)
+        registry.insert(id, cdp_port, Some(pid));
+
+        // Thread: aguarda o CDP subir e libera o listener reservado (sem race)
+        let id_ws = id.to_string();
+        let registry_ws = registry.clone();
+        std::thread::spawn(move || {
+            if let Ok(ws) = crate::cdp::get_ws_url(cdp_port) {
+                registry_ws.set_ws_url(&id_ws, &ws);
+            }
+            drop(cdp_listener); // libera a porta reservada — o Chrome já fez o bind
+        });
+
+        // CDP operations (fingerprint + auto-login) por perfil, na porta única
+        if fp.as_ref().map_or(false, |f| f.enabled) || creds.is_some() {
             let fp_clone = fp.clone();
             let creds_clone = creds.clone();
             std::thread::spawn(move || {
@@ -509,24 +647,28 @@ impl ProfileManager {
         }
 
         let store_path = self.store.file_path.clone();
-        let id_clone = id.to_string();
+        let id_wait = id.to_string();
         thread::spawn(move || {
             let _ = child.wait();
-            let store = ProfileStore { file_path: store_path };
+            let store = ProfileStore {
+                file_path: store_path,
+            };
             let mut profiles = store.load();
-                if let Some(profile) = profiles.get_mut(&id_clone) {
-                    profile.status = "available".into();
-                    profile.updated_at = chrono::Utc::now().to_rfc3339();
-                    let _ = store.save(&profiles);
-                }
-            let _ = fs::remove_file(get_profiles_dir().join(&id_clone).join("lock"));
+            if let Some(profile) = profiles.get_mut(&id_wait) {
+                profile.status = "available".into();
+                profile.updated_at = chrono::Utc::now().to_rfc3339();
+                let _ = store.save(&profiles);
+            }
+            let _ = fs::remove_file(get_profiles_dir().join(&id_wait).join("lock"));
             #[cfg(target_os = "windows")]
-            if let Some(job) = get_active_jobs().lock().unwrap().remove(&id_clone) {
-                unsafe { CloseHandle(job); }
+            if let Some(job) = get_active_jobs().lock().unwrap().remove(&id_wait) {
+                unsafe {
+                    CloseHandle(job);
+                }
             }
         });
 
-        Ok(())
+        Ok(cdp_port)
     }
 
     pub fn close(&self, id: &str) -> Result<(), String> {
@@ -534,7 +676,9 @@ impl ProfileManager {
         {
             let mut jobs = get_active_jobs().lock().unwrap();
             if let Some(job) = jobs.remove(id) {
-                unsafe { CloseHandle(job); }
+                unsafe {
+                    CloseHandle(job);
+                }
                 return Ok(());
             }
         }
@@ -558,38 +702,47 @@ impl ProfileManager {
                 dirty = true;
             }
         }
-        if dirty { let _ = self.store.save(&all); }
+        if dirty {
+            let _ = self.store.save(&all);
+        }
     }
 
-    pub fn export_cookies(&self, id: &str) -> Result<String, String> {
+    pub fn export_cookies(&self, id: &str, port: u16) -> Result<String, String> {
         let all = self.store.load();
         let p = all.get(id).ok_or_else(|| "Profile not found".to_string())?;
         if p.status != "in_use" {
             return Err("Profile must be open to export cookies".into());
         }
-        crate::cdp::export_cookies(29222, id)
+        crate::cdp::export_cookies(port, id)
     }
 
-    pub fn import_cookies(&self, id: &str, cookies_json: &str) -> Result<(), String> {
+    pub fn import_cookies(&self, id: &str, port: u16, cookies_json: &str) -> Result<(), String> {
         let all = self.store.load();
         let p = all.get(id).ok_or_else(|| "Profile not found".to_string())?;
         if p.status != "in_use" {
             return Err("Profile must be open to import cookies".into());
         }
-        crate::cdp::import_cookies(29222, cookies_json)
+        crate::cdp::import_cookies(port, cookies_json)
     }
 
-    fn is_active(&self, id: &str) -> bool {
+    pub fn is_active(&self, id: &str) -> bool {
         let lock = get_profiles_dir().join(id).join("lock");
-        if !lock.exists() { return false; }
+        if !lock.exists() {
+            return false;
+        }
         if let Ok(pid_str) = fs::read_to_string(&lock) {
             if let Ok(pid) = pid_str.trim().parse::<u32>() {
                 #[cfg(target_os = "windows")]
                 {
-                    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+                    use windows_sys::Win32::System::Threading::{
+                        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                    };
                     unsafe {
                         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-                        if h != 0 { CloseHandle(h); return true; }
+                        if h != 0 {
+                            CloseHandle(h);
+                            return true;
+                        }
                     }
                 }
             }
