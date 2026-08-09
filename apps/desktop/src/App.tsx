@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { isTauri, mockInvoke as mock } from "./mock";
 import "./App.css";
 
@@ -87,17 +87,54 @@ function App() {
   const [cookieImportText, setCookieImportText] = useState("");
   const [cookieError, setCookieError] = useState("");
   const [cookieSuccess, setCookieSuccess] = useState("");
+  const [csvMsg, setCsvMsg] = useState("");
 
+  const handleExportCsv = async () => {
+    try {
+      const csv = await invoke<string>("export_profiles_csv");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `perfis-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+      URL.revokeObjectURL(url);
+      setCsvMsg("CSV exportado com sucesso!");
+      setTimeout(() => setCsvMsg(""), 3000);
+    } catch (e: any) { alert(e); }
+  };
+
+  const handleImportCsv = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv";
+    input.onchange = async (e: any) => {
+      const file = e.target?.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const count = await invoke<number>("import_profiles_csv", { csvData: text });
+        setCsvMsg(`${count} perfil(is) importado(s) com sucesso!`);
+        setTimeout(() => setCsvMsg(""), 4000);
+        load();
+      } catch (err: any) { alert(err); }
+    };
+    input.click();
+  };
+
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
   const load = useCallback(async () => {
     try {
-      setProfiles((await invoke<Profile[]>("list_profiles")) || []);
-      setGroups((await invoke<ProfileGroup[]>("list_groups")) || []);
+      const next = (await invoke<Profile[]>("list_profiles")) || [];
+      const nextGroups = (await invoke<ProfileGroup[]>("list_groups")) || [];
+      if (JSON.stringify(next) !== JSON.stringify(profilesRef.current)) setProfiles(next);
+      if (JSON.stringify(nextGroups) !== JSON.stringify(groupsRef.current)) setGroups(nextGroups);
     }
     catch (e) { console.error(e); }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); invoke<string>("get_chrome_path").catch(()=>{}); const iv = setInterval(()=>load(),3000); return ()=>clearInterval(iv); }, [load]);
+  useEffect(() => { load(); invoke<string>("get_chrome_path").catch(()=>{}); const iv = setInterval(()=>{ if (document.visibilityState === "visible") load(); }, 10000); const onShow = ()=>{ if (document.visibilityState === "visible") load(); }; document.addEventListener("visibilitychange", onShow); return ()=>{ clearInterval(iv); document.removeEventListener("visibilitychange", onShow); }; }, [load]);
 
   const resetForm = () => {
     setEditId(null); setName(""); setColor(COLORS[0]); setDescription(""); setTags("");
@@ -222,9 +259,12 @@ function App() {
         <div className="logo"><div className="logo-icon"/><h1>Multi Contas</h1></div>
         <div className="header-actions">
           <input className="search" placeholder="Buscar..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          <button className="btn small" onClick={handleExportCsv} title="Exportar perfis para CSV">📥 CSV</button>
+          <button className="btn small" onClick={handleImportCsv} title="Importar perfis de um arquivo CSV">📤 CSV</button>
           <button className="btn primary" onClick={openNewForm}>+ Novo Perfil</button>
         </div>
       </header>
+      {csvMsg && <div className="csv-msg">{csvMsg}</div>}
 
       {/* Form Modal — with credentials tab */}
       {showForm && (

@@ -74,7 +74,8 @@ header {
   padding: 1.25rem; transition: all 0.2s; position: relative; overflow: hidden;
 }
 .card:hover { border-color: rgba(255,255,255,0.1); transform: translateY(-1px); }
-.card.active { border-color: rgba(16,185,129,0.3); }
+.card.active { border-color: rgba(16,185,129,0.6); background: linear-gradient(180deg, rgba(16,185,129,0.1), var(--card)); }
+.card.active h3 { color: #34d399; }
 .card.active::before {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
   background: linear-gradient(90deg, var(--success), transparent);
@@ -186,6 +187,12 @@ header {
 .main-area { flex: 1; min-width: 0; }
 .group-info { font-size: 0.7rem; color: var(--muted); display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.25rem; }
 .group-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+.csv-msg {
+  background: rgba(16,185,129,0.1); color: #34d399; border: 1px solid rgba(16,185,129,0.15);
+  border-radius: 8px; padding: 0.5rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;
+  text-align: center; animation: fadeIn 0.2s;
+}
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideUp { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

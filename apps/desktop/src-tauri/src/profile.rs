@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use uuid::Uuid;
+
+pub use crate::registry::ProfileRegistry;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
@@ -330,7 +332,9 @@ impl ProfileManager {
     }
 
     pub fn list(&self) -> Vec<Profile> {
-        self.store.load().values().cloned().collect()
+        let mut v: Vec<Profile> = self.store.load().values().cloned().collect();
+        v.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        v
     }
 
     pub fn create(

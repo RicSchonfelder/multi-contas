@@ -145,6 +145,50 @@ export async function mockInvoke<T>(cmd: string, args?: any): Promise<T> {
       pt.updatedAt = new Date().toISOString();
       return pt as any;
     }
+    case "export_profiles_csv": {
+      let csv = "name;color;description;tags;email;password;url;group\n";
+      for (const p of profiles) {
+        const group = mockGroups.find(g => g.id === p.groupId);
+        const csvLine = [
+          p.name, p.color, p.description,
+          (p.tags || []).join(","),
+          p.credentials?.email || "",
+          p.credentials?.password || "",
+          p.credentials?.url || "",
+          group?.name || "",
+        ].map(f => f.includes(";") ? `"${f.replace(/"/g, '""')}"` : f).join(";");
+        csv += csvLine + "\n";
+      }
+      return csv as any;
+    }
+    case "import_profiles_csv": {
+      const lines = args.csvData.split("\n").slice(1).filter((l: string) => l.trim());
+      let count = 0;
+      for (const line of lines) {
+        const fields = line.split(";").map((f: string) => f.replace(/^"|"$/g, "").replace(/""/g, '"'));
+        if (fields.length < 8 || !fields[0].trim()) continue;
+        const [name, color, description, tagsStr, email, password, url, groupName] = fields;
+        const p: Profile = {
+          id: String(nextId++), name: name.trim(), color: color || "#6366F1",
+          description: description || "", tags: tagsStr ? tagsStr.split(",").map((t: string) => t.trim()).filter(Boolean) : [],
+          status: "available", proxy: null,
+          credentials: email?.trim() ? { email: email.trim(), password, url: url || "https://accounts.google.com" } : null,
+          fingerprint: null, extensions: [], groupId: null,
+          localDir: "", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastOpenedAt: null,
+        };
+        profiles.push(p);
+        if (groupName?.trim()) {
+          let g = mockGroups.find(x => x.name === groupName.trim());
+          if (!g) {
+            g = { id: String(nextGroupId++), name: groupName.trim(), color: "#6366F1", sortOrder: mockGroups.length + 1, createdAt: new Date().toISOString() };
+            mockGroups.push(g);
+          }
+          p.groupId = g.id;
+        }
+        count++;
+      }
+      return count as any;
+    }
     default: throw `unknown command: ${cmd}`;
   }
 }

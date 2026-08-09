@@ -29,14 +29,16 @@ fn body_to_json(req: &mut tiny_http::Request) -> Option<serde_json::Value> {
 
 fn build(status: StatusCode, body: String, cors: bool) -> Response<Cursor<Vec<u8>>> {
     let data = body.into_bytes();
-    let mut headers =
-        vec![Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()];
+    let mut resp = Response::from_data(data).with_status_code(status);
+    resp = resp.with_header(
+        Header::from_bytes(b"Content-Type", b"application/json").unwrap(),
+    );
     if cors {
-        headers.push(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+        resp = resp.with_header(
+            Header::from_bytes(b"Access-Control-Allow-Origin", b"*").unwrap(),
+        );
     }
-    Response::from_data(Cursor::new(data))
-        .with_status_code(status)
-        .with_headers(headers)
+    resp
 }
 
 fn json_response(status: StatusCode, body: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
@@ -52,9 +54,6 @@ fn err(status: u16, msg: &str) -> Response<Cursor<Vec<u8>>> {
     json_response(StatusCode(status), json!({ "error": msg }))
 }
 
-/// Inicia o servidor HTTP de controle (somente 127.0.0.1) em thread separada.
-/// Permite que o Hermes (ou qualquer cliente local com o token) abra N perfis
-/// isolados e os controle via CDP.
 pub fn start(state: Arc<AppState>) {
     std::thread::spawn(move || {
         let token = read_token();
@@ -80,21 +79,29 @@ pub fn start(state: Arc<AppState>) {
     });
 }
 
+fn header_field_matches(h: &tiny_http::Header, target: &str) -> bool {
+    h.field
+        .as_str()
+        .to_string()
+        .eq_ignore_ascii_case(target)
+}
+
 fn authorized(token: &Option<String>, req: &tiny_http::Request) -> bool {
     match token {
-        None => false, // sem token no disco -> servidor tranca
+        None => false,
         Some(t) => {
             let header = req.headers().iter().find(|h| {
-                h.field.as_str().eq_ignore_ascii_case("X-Control-Token")
-                    || h.field.as_str().eq_ignore_ascii_case("Authorization")
+                header_field_matches(h, "X-Control-Token")
+                    || header_field_matches(h, "Authorization")
             });
             match header {
                 Some(h) => {
-                    let f = h.field.as_str(); // &str
                     let v = String::from_utf8_lossy(h.value.as_ref());
                     let v = v.trim().trim_start_matches("Bearer ").trim();
-                    f.eq_ignore_ascii_case("X-Control-Token") && v == t
-                        || f.eq_ignore_ascii_case("Authorization") && v == t
+                    let field_ok =
+                        header_field_matches(h, "X-Control-Token")
+                            || header_field_matches(h, "Authorization");
+                    field_ok && v == t.as_str()
                 }
                 None => false,
             }
@@ -110,7 +117,6 @@ fn handle(
     let url = req.url().to_string();
     let method = req.method().clone();
 
-    // CORS preflight
     if method == Method::Options {
         return ok(json!({ "ok": true }));
     }
@@ -119,12 +125,10 @@ fn handle(
         return err(403, "Token de controle inválido ou ausente");
     }
 
-    // /api/v1/health
     if url == "/api/v1/health" && method == Method::Get {
         return ok(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }));
     }
 
-    // /api/v1/profiles
     if url == "/api/v1/profiles" && method == Method::Get {
         let profiles = state.manager.list();
         let list: Vec<serde_json::Value> = profiles
@@ -143,7 +147,6 @@ fn handle(
         return ok(json!({ "profiles": list }));
     }
 
-    // /api/v1/profiles/open-all  -> abre todas as contas disponíveis
     if url == "/api/v1/profiles/open-all" && method == Method::Post {
         let profiles = state.manager.list();
         let mut opened = Vec::new();
@@ -158,7 +161,6 @@ fn handle(
         return ok(json!({ "opened": opened }));
     }
 
-    // /api/v1/profiles/open-all-and-navigate  -> abre todas + manda pra URL (ex.: live)
     if url == "/api/v1/profiles/open-all-and-navigate" && method == Method::Post {
         let body = body_to_json(req);
         let target = body
@@ -176,12 +178,14 @@ fn handle(
             if p.status == "available" {
                 match state.manager.open(&p.id, state.registry.clone()) {
                     Ok(port) => {
-                        // navega cada conta para a URL (best-effort em thread)
                         let nav_target = target.clone();
                         std::thread::spawn(move || {
                             let _ = crate::cdp::navigate(port, &nav_target);
                         });
-                        results.push(json!({ "id": p.id, "name": p.name, "cdpPort": port, "navigatingTo": target }));
+                        results.push(json!({
+                            "id": p.id, "name": p.name,
+                            "cdpPort": port, "navigatingTo": target
+                        }));
                     }
                     Err(e) => results.push(json!({ "id": p.id, "name": p.name, "error": e })),
                 }
@@ -190,8 +194,6 @@ fn handle(
         return ok(json!({ "openedAndNavigating": results }));
     }
 
-    // rotas por :id
-    // /api/v1/profiles/:id/open
     if let Some(id) = url.strip_prefix("/api/v1/profiles/") {
         if let Some(profile_id) = id.strip_suffix("/open") {
             if method == Method::Post {
@@ -203,7 +205,6 @@ fn handle(
                 };
             }
         }
-        // /api/v1/profiles/:id/close
         if let Some(profile_id) = id.strip_suffix("/close") {
             if method == Method::Post {
                 return match state.manager.close(profile_id) {
@@ -215,7 +216,6 @@ fn handle(
                 };
             }
         }
-        // /api/v1/profiles/:id/navigate
         if let Some(profile_id) = id.strip_suffix("/navigate") {
             if method == Method::Post {
                 let body = body_to_json(req);
@@ -238,7 +238,6 @@ fn handle(
                 };
             }
         }
-        // /api/v1/profiles/:id/comment
         if let Some(profile_id) = id.strip_suffix("/comment") {
             if method == Method::Post {
                 let body = body_to_json(req);

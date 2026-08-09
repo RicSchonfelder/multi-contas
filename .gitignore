@@ -27,3 +27,4 @@ auth.json
 jwt_secret
 docs/runbooks/
 infrastructure/
+contas_google.csv
