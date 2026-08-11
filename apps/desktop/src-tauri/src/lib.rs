@@ -1,11 +1,16 @@
 pub mod cdp;
 pub mod hermes;
+pub mod orchestrator_config;
+pub mod resource;
+pub mod orchestrator;
 pub mod profile;
 pub mod registry;
 
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use orchestrator::Orchestrator;
+use orchestrator_config::OrchestratorConfig;
 use profile::allocate_free_port;
 use profile::{
     Credentials, Extension, FingerprintConfig, Profile, ProfileGroup, ProfileManager, ProxyConfig,
@@ -15,6 +20,7 @@ use registry::ProfileRegistry;
 pub struct AppState {
     manager: ProfileManager,
     registry: Arc<ProfileRegistry>,
+    orchestrator: Arc<Orchestrator>,
 }
 
 #[tauri::command]
@@ -426,9 +432,14 @@ pub fn run() {
     let manager = ProfileManager::new();
     manager.recover();
 
+    let registry = Arc::new(ProfileRegistry::new());
+    let config = OrchestratorConfig::load();
+    let orchestrator = Arc::new(Orchestrator::new(config, registry.clone()));
+
     let app_state = Arc::new(AppState {
         manager,
-        registry: Arc::new(ProfileRegistry::new()),
+        registry,
+        orchestrator,
     });
 
     // Sobe o servidor de controle Hermes (localhost + token) em thread separada

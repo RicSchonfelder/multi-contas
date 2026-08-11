@@ -28,3 +28,12 @@ jwt_secret
 docs/runbooks/
 infrastructure/
 contas_google.csv
+
+# Runtime sensível (cookies, credenciais, tokens, sessões)
+profiles.json
+control_token
+orchestrator.json
+C:
+nul
+*.session
+app-data/

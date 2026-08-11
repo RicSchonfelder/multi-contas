@@ -1,0 +1,18 @@
+# Normalização de fim de linha multiplataforma
+* text=auto
+
+# Binários — nunca converter
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg text
+*.deb binary
+*.msi binary
+*.exe binary
+*.dll binary
+*.p12 binary
+*.pfx binary
+*.crt binary
+*.key binary

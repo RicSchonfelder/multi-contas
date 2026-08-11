@@ -77,4 +77,35 @@ impl ProfileRegistry {
     pub fn ids(&self) -> Vec<String> {
         self.map.lock().unwrap().keys().cloned().collect()
     }
+
+    pub fn len(&self) -> usize {
+        self.map.lock().unwrap().len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_remove_len() {
+        let r = ProfileRegistry::new();
+        assert_eq!(r.len(), 0);
+        r.insert("a", 1, None);
+        r.insert("b", 2, None);
+        assert_eq!(r.len(), 2);
+        r.remove("a");
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn test_active_ids() {
+        let r = ProfileRegistry::new();
+        r.insert("a", 1, None);
+        r.insert("b", 2, None);
+        let ids = r.ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"a".to_string()));
+        assert!(ids.contains(&"b".to_string()));
+    }
 }

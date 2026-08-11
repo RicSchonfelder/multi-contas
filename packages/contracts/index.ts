@@ -87,3 +87,95 @@ export interface Profile {
   folderId?: string;
   proxyId?: string;
 }
+
+// ===== Smart Orchestrator types =====
+
+export type ReasonCode =
+  | 'limit_exceeded'
+  | 'resource_exhausted'
+  | 'circuit_breaker_open'
+  | 'profile_not_found'
+  | 'profile_already_open'
+  | 'auth_failed'
+  | 'invalid_request'
+  | 'profile_cooldown';
+
+export type JobType = 'navigate' | 'comment' | 'close' | 'custom_script';
+
+export type JobState = 'pending' | 'running' | 'done' | 'failed';
+
+export interface Job {
+  id: string;
+  profileId: string;
+  type: JobType;
+  payload: Record<string, unknown>;
+  priority: number;
+  state: JobState;
+  createdAt: string;
+  startedAt?: string;
+  error?: string;
+}
+
+export interface OpenBatchRequest {
+  profileIds: string[];
+  navigateTo?: string;
+  priority?: number;
+}
+
+export interface OpenBatchEntry {
+  id: string;
+  cdpPort?: number;
+  wsUrl?: string;
+}
+
+export interface QueuedEntry {
+  id: string;
+  position: number;
+  etaMs: number;
+}
+
+export interface RejectedEntry {
+  id: string;
+  error: string;
+  reason: ReasonCode;
+}
+
+export interface OpenBatchResponse {
+  opened: OpenBatchEntry[];
+  queued: QueuedEntry[];
+  rejected: RejectedEntry[];
+  resourceWarnings: string[];
+}
+
+export interface ResourceSnapshot {
+  freeRamMb: number;
+  load1m: number;
+  load5m: number;
+  chromeProcesses: number;
+  healthy: boolean;
+}
+
+export interface CircuitBreakerStatus {
+  profileId: string;
+  state: 'open' | 'closed';
+  cooldownUntil?: string;
+}
+
+export interface OrchestratorStatus {
+  activeProfiles: number;
+  maxActiveProfiles: number;
+  queueDepth: number;
+  resources: ResourceSnapshot;
+  circuitBreakers: CircuitBreakerStatus[];
+}
+
+export interface HermesHealthResponse {
+  ok: boolean;
+  version: string;
+  orchestrator: {
+    activeProfiles: number;
+    maxProfiles: number;
+    queueDepth: number;
+  };
+  resources: ResourceSnapshot;
+}

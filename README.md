@@ -68,19 +68,45 @@ O app expõe um servidor HTTP local para o **Hermes Agent** orquestrar múltiplo
 - **Endereço:** `http://127.0.0.1:29222`
 - **Autenticação:** token Bearer (configurado localmente)
 - Cada perfil recebe uma **porta CDP dinâmica** (alocada com um listener reservado para evitar race condition ao subir o Chrome).
+- **Limite:** máximo de **3 perfis Chrome ativos** simultaneamente (configurável via `orchestrator.json`).
+- **Resource-aware:** monitora RAM livre (min 512MB), load average (max 80%) e processos Chrome (max 30) antes de abrir novos perfis.
 
 Rotas principais:
 
 | Método | Rota | Descrição |
 |--------|------|-----------|
-| `GET` | `/api/v1/health` | Status do servidor |
-| `GET` | `/api/v1/profiles` | Lista os perfis (com a porta CDP de cada um aberto) |
-| `POST` | `/api/v1/profiles/open-all` | Abre TODOS os perfis disponíveis (cada um numa porta CDP única) |
-| `POST` | `/api/v1/profiles/open-all-and-navigate` | Abre todos e manda cada um navegar para `{"url": "..."}` |
-| `POST` | `/api/v1/profiles/:id/open` | Abre um perfil específico |
+| `GET` | `/api/v1/health` | Status do servidor (inclui info do orquestrador) |
+| `GET` | `/api/v1/profiles` | Lista os perfis (com porta CDP e prioridade) |
+| `POST` | `/api/v1/profiles/open-batch` | Abre múltiplos perfis respeitando limite de 3. Aceita `{"profile_ids": [...], "navigate_to": "url", "priority": 5}`. Retorna `opened`, `queued`, `rejected` |
+| `GET` | `/api/v1/orchestrator/status` | Estado do orquestrador: ativos, fila, recursos, circuit breakers |
+| `POST` | `/api/v1/profiles/:id/open` | Abre um perfil específico (retorna **429** se limite atingido, **503** se recursos insuficientes) |
 | `POST` | `/api/v1/profiles/:id/close` | Encerra o perfil |
 | `POST` | `/api/v1/profiles/:id/navigate` | Navega o perfil para `{"url": "..."}` |
-| `POST` | `/api/v1/profiles/:id/comment` | Comenta `{"text": "..."}` (ex.: YouTube live-chat) a partir daquele perfil |
+| `POST` | `/api/v1/profiles/:id/comment` | Comenta `{"text": "..."}` (YouTube live-chat) |
+
+Rotas **DEPRECATED** (mantidas com header `Deprecation: true`):
+
+| Método | Rota | Substituída por |
+|--------|------|-----------------|
+| `POST` | `/api/v1/profiles/open-all` | `POST /api/v1/profiles/open-batch` |
+| `POST` | `/api/v1/profiles/open-all-and-navigate` | `POST /api/v1/profiles/open-batch` com `navigate_to` |
+
+Respostas de erro incluem `reason` codes: `limit_exceeded` (429), `resource_exhausted` (503), `circuit_breaker_open` (503), `profile_cooldown` (503).
+
+### Configuração do Orquestrador
+
+Crie `orchestrator.json` no diretório da aplicação (`%LOCALAPPDATA%/MultiContas/`) para customizar limites:
+
+```json
+{
+  "max_active_profiles": 3,
+  "max_xfce_sessions": 2,
+  "min_free_ram_mb": 512,
+  "max_load_pct": 80,
+  "max_chrome_procs": 30,
+  "queue_enabled": true
+}
+```
 
 Autenticação: header `X-Control-Token` (ou `Authorization: Bearer <token>`), com o token lido de `%LOCALAPPDATA%/MultiContas/control_token`. O servidor escuta **somente em `127.0.0.1`**.
 

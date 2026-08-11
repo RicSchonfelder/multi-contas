@@ -123,6 +123,12 @@ pub struct Profile {
     pub group_id: Option<String>,
     #[serde(default)]
     pub extensions: Vec<Extension>,
+    #[serde(default = "default_priority")]
+    pub priority: u8,
+}
+
+fn default_priority() -> u8 {
+    128
 }
 
 #[cfg(target_os = "windows")]
@@ -367,6 +373,7 @@ impl ProfileManager {
             last_opened_at: None,
             group_id: None,
             extensions: Vec::new(),
+            priority: 128,
         };
         let mut all = self.store.load();
         all.insert(id, p.clone());
